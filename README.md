@@ -1,2 +1,1 @@
-# lfAcceleration
-Lightfield and LKG data rendering acceleration in Blender
+Useful scripts for light field analysis and processing
