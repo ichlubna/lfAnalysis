@@ -14,10 +14,16 @@ class Compressor:
 
         print(coefs)
 
-        for i in range(40, len(coefs)):
-            coefs[i] = 0
+        newCoefs = [0]*len(coefs)
+        #sortedIndices = sorted(range(len(coefs)), key=lambda i: abs(coefs[i]))
+        #for i in range(0,25):
+        #    newCoefs[sortedIndices[i]] = coefs[sortedIndices[i]]
+        #newCoefs[0] = coefs[0]
 
-        valuesBack = idct(coefs, norm="ortho")
+        for i in range(0, 25):
+           newCoefs[i] = coefs[i]
+
+        valuesBack = idct(newCoefs, norm="ortho")
         delta = []
         for i in range(len(coefs)):
             delta.append(round(abs(values[i]-valuesBack[i]),5))
@@ -34,7 +40,7 @@ class Compressor:
         #print(*coefs)
         print("Size of data:")
         print(sys.getsizeof(values))
-        print("Size of cefficients:")
+        print("Size of coefficients:")
         print(sys.getsizeof(coefs))
         #rleCoefs = rle.encode(coefs)
         #print("Size of rle")
