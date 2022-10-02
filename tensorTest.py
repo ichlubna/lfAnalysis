@@ -42,8 +42,8 @@ typedef struct {float r,g,b;} Pixel;
 __device__ uint2 getImgCoords()
 {
     uint2 coords;
-    coords.x = threadIdx.x + blockIdx.x * blockDim.x;
-    coords.y = threadIdx.y + blockIdx.y * blockDim.y;
+    coords.x = (threadIdx.x + blockIdx.x * blockDim.x);
+    coords.y = (threadIdx.y + blockIdx.y * blockDim.y);
     return coords;
 }
 
@@ -73,56 +73,64 @@ __device__ void setPixel(unsigned char *image, int id, uchar4 pixel)
 }
 """
 
-kernelSourcePerPixel = """
-__device__ void interpolateImages(unsigned char images[IMG_COUNT][IMG_SIZE], int id, unsigned char *result)
+kernelSourcePerBlock = """
+__device__ void interpolateImages(unsigned char images[IMG_COUNT][IMG_SIZE], int id, unsigned char *result, int pixelCount)
 {
     float weights[]{0.2f, 0.5f, 0.1f, 0.2f};
-    float sum[]{0,0,0,0};
-    for(int i = 0; i<IMG_COUNT; i++)
+    int depth = 4;
+    for(int p = 0; p<pixelCount; p++)
     {
-        uchar4 pixel = getPixel(images[i], id);
-        float fPixel[]{float(pixel.x), float(pixel.y), float(pixel.z), float(pixel.w)};
-        for(int j=0; j<4; j++)
-            //sum[j] += fPixel[j] * weights[i];
-            sum[j] = __fmaf_rn(fPixel[j], weights[i], sum[j]);
+        int newId = id+p*depth+p*(IMG_SIZE/pixelCount);
+        //int newId = pixelCount*id+p*depth;
+        float sum[]{0,0,0,0};
+        for(int i = 0; i<IMG_COUNT; i++)
+        {
+            uchar4 pixel = getPixel(images[i], newId);
+            float fPixel[]{float(pixel.x), float(pixel.y), float(pixel.z), float(pixel.w)};
+            for(int j=0; j<4; j++)
+                //sum[j] += fPixel[j] * weights[i];
+                sum[j] = __fmaf_rn(fPixel[j], weights[i], sum[j]);
+        }
+        uchar4 chSum{sum[0], sum[1], sum[2], sum[3]};
+        setPixel(result, newId, chSum);
     }
-    uchar4 chSum{sum[0], sum[1], sum[2], sum[3]};
-    setPixel(result, id, chSum);
 }
 
 __global__ void process( int width, int height,
-unsigned char images[IMG_COUNT][IMG_SIZE], unsigned char *result )
+unsigned char images[IMG_COUNT][IMG_SIZE], unsigned char *result, int pixelCount)
   {
-    unsigned char* leftTop = images[0];
     uint2 coords = getImgCoords();
     if(coords.x >= width || coords.y >= height)
         return;
-    int id = getLinearID(width, coords);
-    setPixel(result, id, getPixel(leftTop, id));
-    interpolateImages(images, id, result);
+    int id = getLinearID(width/pixelCount, coords);
+    interpolateImages(images, id, result, pixelCount);
 
   }
 """
 
-perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel, options=kernelConstants)
+perBlockKernel = SourceModule(kernelSourceGeneral+kernelSourcePerBlock, options=kernelConstants)
 
-kernels = [("Per pixel", perPixelKernel)]
+kernels = [("Per block", perBlockKernel, numpy.int32(1))]
 
-for kernel in kernels:
-    print(kernel[0])
+numberOfMeasurements = 10
+for i in range(0,numberOfMeasurements):
+    for kernel in kernels:
+        print(kernel[0])
 
-    start=cuda.Event()
-    end=cuda.Event()
-    start.record()
-    func = kernel[1].get_function("process")
-    func(width, height, imagesGPU, resultGPU, block=(16, 16, 1), grid=(int(width/16), int(height/16)), shared=0)
-    end.record()
-    end.synchronize()
-    print("Time: "+str(start.time_till(end))+" ms")
+        start=cuda.Event()
+        end=cuda.Event()
+        start.record()
+        func = kernel[1].get_function("process")
+        func(width, height, imagesGPU, resultGPU, kernel[2], block=(16, 16, 1), grid=(int(width/(16*kernel[2])), int(height/(16))), shared=0)
+        end.record()
+        end.synchronize()
+        print("Time: "+str(start.time_till(end))+" ms")
 
-    cuda.memcpy_dtoh(result, resultGPU)
-    result = result.astype(numpy.uint8)
-    resultImage = Image.frombytes("RGBA", (width, height), result)
-    resultImage.save("./distorted/test.png")
-    evaluator = eva.Evaluator()
-    print(evaluator.metrics("./original", "./distorted"))
+        if i == numberOfMeasurements-1:
+            cuda.memcpy_dtoh(result, resultGPU)
+            result = result.astype(numpy.uint8)
+            resultImage = Image.frombytes("RGBA", (width, height), result)
+            resultImage.save("./distorted/test.png")
+            evaluator = eva.Evaluator()
+            print(evaluator.metrics("./original", "./distorted"))
+            print("")

@@ -13,7 +13,7 @@ class Metrics:
         return (sum(self.vif)/len(self.vif))
 
     def __str__(self):
-        return "PSNR: "+str(self.psnr)+"\nSSIM: "+str(self.ssim)+"\nVMAF"+str(self.vmaf)+"\nVIF"+str(self.avgVif())
+        return "PSNR: "+str(self.psnr)+"\nSSIM: "+str(self.ssim)+"\nVMAF: "+str(self.vmaf)+"\nVIF: "+str(self.avgVif())
 
 class Evaluator:
     tmpDir = ""
