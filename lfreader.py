@@ -23,6 +23,12 @@ class LfReader:
             self.rows = int(length[0])+1
         self.files = [files[i:i+self.cols] for i in range(0, len(files), self.cols)]
 
+    def getColsRows(self):
+        return [self.cols, self.rows]
+
+    def getResolution(self):
+        return self.openImage(0,0).size
+
     def setPixFmt(self, pixFmt):
         self.pixFmt = pixFmt
 
