@@ -51,7 +51,7 @@ class Evaluator:
         m.psnr = result.stderr.partition("average:")[2]
         m.psnr = m.psnr.partition(" min")[0]
 
-        result = basher.run(commandStart+" -filter_complex libvmaf "+commandEnd)
+        result = basher.run(commandStart+" -lavfi libvmaf "+commandEnd)
         m.vmaf = result.stderr.partition("VMAF score: ")[2]
         m.vmaf = m.vmaf.partition("\n")[0]
 

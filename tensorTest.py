@@ -4,6 +4,7 @@ from PIL import Image
 import pycuda.driver as cuda
 import pycuda.autoinit
 from pycuda.compiler import SourceModule
+from progress.bar import ChargingBar
 import numpy
 import cv2
 import sys
@@ -22,17 +23,18 @@ class KernelParams:
         self.wgDivide = wgDivide
 
 class KernelTester:
-    imageCount = 4
+    imageCount = 64
     numberOfMeasurements = 10
     width = 0
     height = 0
+    cols = 0
+    rows = 0
     depth = 4
     size = 0
+    totalSize = 0
     lfReader = None
     imagesGPU = None
     resultGPU = None
-    leftTopX = 0
-    leftTopY = 0
     kernels = []
 
     def loadInput(self):
@@ -41,28 +43,36 @@ class KernelTester:
         path = sys.argv[1]
         lfReader.loadDir(path)
         colsRows = lfReader.getColsRows()
-        self.leftTopX = int(colsRows[0]/2)-1
-        self.leftTopY = int(colsRows[1]/2)-1
+        self.cols = numpy.int32(colsRows[0])
+        self.rows = numpy.int32(colsRows[1])
+        self.imageCount = self.cols*self.rows
         width, height = lfReader.getResolution()
         self.width = numpy.int32(width)
         self.height = numpy.int32(height)
         depth = numpy.int32(4)
         self.size = int(width*height*depth)
+        self.totalSize = numpy.uint(self.size*self.imageCount)
         self.lfReader = lfReader
 
     def allocGPUResources(self):
+        bar = ChargingBar("Allocating and uploading textures", max=self.cols*self.rows+1)
         images = bytes()
-        for i in range(0,self.imageCount):
-            img = self.lfReader.openImage(self.leftTopY+i%2, int(self.leftTopX+i/2))
-            imgBytes = img.tobytes()
-            images = images + imgBytes
+        for y in range(0,self.rows):
+            for x in range(0, self.cols):
+                img = self.lfReader.openImage(y,x)
+                imgBytes = img.tobytes()
+                images += imgBytes
+                bar.next()
+        bar.finish()
 
-        self.imagesGPU = cuda.mem_alloc(self.imageCount*self.size)
+        self.imagesGPU = cuda.mem_alloc(int(self.totalSize))
         cuda.memcpy_htod(self.imagesGPU, images)
-        self.resultGPU = cuda.mem_alloc(int(self.size))
+        self.resultGPU = cuda.mem_alloc(self.size)
+        bar.next()
+        bar.finish()
 
     def compileKernels(self):
-        kernelConstants = ["-DIMG_SIZE="+str(self.size), "-DIMG_COUNT="+str(self.imageCount)]
+        kernelConstants = ["-DIMG_WIDTH="+str(self.width), "-DIMG_HEIGHT="+str(self.height), "-DGRID_COLS="+str(self.cols), "-DGRID_ROWS="+str(self.rows)]
 
         kernelSourceGeneral = """
         typedef struct {float r,g,b;} Pixel;
@@ -74,126 +84,94 @@ class KernelTester:
             return coords;
         }
 
+        __device__ unsigned int getLinearID(uint2 coords, int width)
+        {
+            return width*coords.y + coords.x;
+        }
+
+        __device__ float squaredDistance(float2 a, float2 b)
+        {
+            return powf(a.x-b.x,2) + powf(a.y-b.y,2);
+        }
+
+        __device__ uint2 focusCoords(uint2 coords, int focus, uint2 position, float2 center)
+        {
+            float aspect = float(IMG_WIDTH)/IMG_HEIGHT;
+            float2 offset{center.x-position.x, center.y-position.y};
+            return {focus*offset.x, round(aspect*offset.y*focus)};
+        }
+
         class Images
         {
             public:
-            uchar4 *inData[IMG_COUNT];
+            uchar4 *inData[GRID_COLS*GRID_ROWS];
             uchar4 *outData;
             int width = 0;
             int height = 0;
             __device__ Images(int w, int h) : width{w}, height{h} {};
 
-            __device__ uchar4 getPixel(int id, int linearCoord)
+            __device__ uchar4 getPixel(int imageID, uint2 coords)
             {
-                return inData[id][linearCoord];
+                uint2 clamped{min(coords.x, IMG_WIDTH), min(coords.y, IMG_HEIGHT)};
+                unsigned int linearCoord = getLinearID(clamped, IMG_WIDTH);
+                return inData[imageID][linearCoord];
             }
 
-            __device__ void setPixel(int linearCoord, uchar4 pixel)
+            __device__ void setPixel(uint2 coords, uchar4 pixel)
             {
+                unsigned int linearCoord = getLinearID(coords, IMG_WIDTH);
                 outData[linearCoord] = pixel;
-            }
-
-            __device__ unsigned int getLinearID(uint2 coords)
-            {
-                return width*coords.y + coords.x;
             }
         };
 
         """
 
         kernelSourceMain = """
-        __global__ void process( int width, int height, unsigned char inputImages[IMG_COUNT][IMG_SIZE], unsigned char *result, int parameter)
+        __global__ void process(unsigned char inputImages[GRID_COLS*GRID_ROWS][IMG_WIDTH*IMG_HEIGHT], unsigned char *result, int parameter)
           {
-            Images images(width, height);
-            for(int i=0; i<IMG_COUNT; i++)
+            Images images(IMG_WIDTH, IMG_HEIGHT);
+            for(int i=0; i<GRID_COLS*GRID_ROWS; i++)
                 images.inData[i] = reinterpret_cast<uchar4*>(inputImages[i]);
             images.outData = reinterpret_cast<uchar4*>(result);
 
             uint2 coords = getImgCoords();
-            if(coords.x >= width || coords.y >= height)
+            if(coords.x >= IMG_WIDTH || coords.y >= IMG_HEIGHT)
                 return;
-            interpolateImages(images, result, coords, parameter);
 
+            interpolateImages(images, result, coords, parameter);
           }
         """
 
         kernelSourcePerPixel = """
-        __device__ void interpolateImages(Images images, unsigned char *result, uint2 coords, int pixelCount)
+        __device__ void interpolateImages(Images images, unsigned char *result, uint2 coords, int focus)
         {
-            int id  = images.getLinearID(coords);
-            float weights[]{0.2f, 0.5f, 0.1f, 0.2f};
-            for(int p = 0; p<pixelCount; p++)
-            {
-                int newId = id+p*+p*(IMG_SIZE/pixelCount);
-                //int newId = pixelCount*id+p;
-                float sum[]{0,0,0,0};
-                for(int i = 0; i<IMG_COUNT; i++)
+            float sum[]{0,0,0,0};
+            float2 gridCenter{GRID_COLS/2.f, GRID_ROWS/2.f};
+            float maxDistance = squaredDistance({0,0}, gridCenter);
+            float weightSum{0};
+            for(unsigned int y = 0; y<GRID_ROWS; y++)
+                for(unsigned int x = 0; x<GRID_COLS; x++)
                 {
-                    uchar4 pixel = images.getPixel(i, newId);
+                    uint2 focusedCoords = focusCoords(coords, 50, {x,y}, gridCenter);
+                    float weight = 1.0f;// 1.f-maxDistance/squaredDistance({float(x),float(y)}, gridCenter);
+                    weightSum += weight;
+                    int gridID = getLinearID({x,y}, GRID_COLS);
+                    uchar4 pixel = images.getPixel(gridID, focusedCoords);
                     float fPixel[]{float(pixel.x), float(pixel.y), float(pixel.z), float(pixel.w)};
                     for(int j=0; j<4; j++)
-                        //sum[j] += fPixel[j] * weights[i];
-                        sum[j] = __fmaf_rn(fPixel[j], weights[i], sum[j]);
+                        sum[j] = __fmaf_rn(fPixel[j], weight, sum[j]);
                 }
-                uchar4 chSum{sum[0], sum[1], sum[2], sum[3]};
-                images.setPixel(newId, chSum);
-            }
+            for(int j=0; j<4; j++)
+                sum[j] /= weightSum;
+            uchar4 chSum{sum[0], sum[1], sum[2], sum[3]};
+            images.setPixel(coords, chSum);
         }
         """
 
-        kernelSourcePerBlock = """
-
-        __device__ void loadBlock(unsigned char (*block)[4][4], unsigned char img[IMG_SIZE], int id)
-        {
-            int *imgInt = reinterpret_cast<int*>(img);
-            const int pixelCount = 4;
-            for(int i=0; i<pixelCount; i++)
-            {
-                int *blockInt = reinterpret_cast<int*>((*block)[i]);
-                blockInt[i] = imgInt[id+i];
-            }
-        }
-
-        __device__ void storeBlock(float (*block)[4][4], unsigned char *result, int id)
-        {
-            int *resultInt = reinterpret_cast<int*>(result);
-            const int pixelCount = 4;
-            for(int i=0; i<pixelCount; i++)
-            {
-                unsigned char pixel[4];
-                for(int j=0; j<4; j++)
-                    pixel[j] = int((*block)[i][j]);
-                int *pixelInt = reinterpret_cast<int*>(&pixel);
-                resultInt[id+i] = *pixelInt;
-            }
-        }
-
-        __device__ void interpolateImages(unsigned char images[IMG_COUNT][IMG_SIZE], int id, unsigned char *result)
-        {
-            float weights[]{0.2f, 0.5f, 0.1f, 0.2f};
-            const int pixelCount = 4;
-            const int depth = 4;
-            for(int i = 0; i<IMG_COUNT; i++)
-            {
-                unsigned char block[4][4];
-                loadBlock(&block, images[i], id);
-                float sum[4][4]{0,0,0,0};
-                for(int p = 0; p<pixelCount; p++)
-                {
-                    float pixel[]{float(block[p][0]), float(block[p][1]), float(block[p][2]), float(block[p][3])};
-                    for(int j=0; j<depth; j++)
-                        sum[p][j] = __fmaf_rn(pixel[j], weights[i], sum[p][j]);
-                }
-                storeBlock(&sum, result, id);
-            }
-        }
-        """
 
         perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel+kernelSourceMain, options=kernelConstants)
-        #perBlockKernel = SourceModule(kernelSourceGeneral+kernelSourcePerBlock+kernelSourceMain, options=kernelConstants)
 
         self.kernels = [ KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (1, 1))]
-                    #KernelParams("Per block", perBlockKernel, numpy.int32(4), (4, 1))]
 
     def runKernels(self):
         result = numpy.zeros((self.height, self.width, self.depth), numpy.uint8)
@@ -204,7 +182,7 @@ class KernelTester:
                 end=cuda.Event()
                 start.record()
                 func = kernel.module.get_function("process")
-                func(self.width, self.height, self.imagesGPU, self.resultGPU, kernel.parameter, block=(16, 16, 1), grid=(int(self.width/(16/kernel.wgDivide[0])), int(self.height/(16/kernel.wgDivide[1]))), shared=0)
+                func(self.imagesGPU, self.resultGPU, kernel.parameter, block=(16, 16, 1), grid=(int(self.width/(16/kernel.wgDivide[0])), int(self.height/(16/kernel.wgDivide[1]))), shared=0)
                 end.record()
                 end.synchronize()
                 print("Time: "+str(start.time_till(end))+" ms")
@@ -221,8 +199,8 @@ class KernelTester:
 try:
     kt = KernelTester()
     kt.loadInput()
-    kt.allocGPUResources()
     kt.compileKernels()
+    kt.allocGPUResources()
     kt.runKernels()
 except Exception as e:
     print(e)
