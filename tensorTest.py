@@ -24,7 +24,7 @@ class KernelParams:
 
 class KernelTester:
     imageCount = 64
-    numberOfMeasurements = 10
+    numberOfMeasurements = 5
     width = 0
     height = 0
     cols = 0
@@ -59,7 +59,7 @@ class KernelTester:
         images = bytes()
         for y in range(0,self.rows):
             for x in range(0, self.cols):
-                img = self.lfReader.openImage(y,x)
+                img = self.lfReader.openImage(x,y)
                 imgBytes = img.tobytes()
                 images += imgBytes
                 bar.next()
@@ -75,6 +75,9 @@ class KernelTester:
         kernelConstants = ["-DIMG_WIDTH="+str(self.width), "-DIMG_HEIGHT="+str(self.height), "-DGRID_COLS="+str(self.cols), "-DGRID_ROWS="+str(self.rows)]
 
         kernelSourceGeneral = """
+        #include <mma.h>
+        using namespace nvcuda;
+
         typedef struct {float r,g,b;} Pixel;
         __device__ uint2 getImgCoords()
         {
@@ -94,11 +97,10 @@ class KernelTester:
             return powf(a.x-b.x,2) + powf(a.y-b.y,2);
         }
 
-        __device__ uint2 focusCoords(uint2 coords, int focus, uint2 position, float2 center)
+        __device__ int2 focusCoords(uint2 coords, int focus, uint2 position, float2 center)
         {
-            float aspect = float(IMG_WIDTH)/IMG_HEIGHT;
             float2 offset{center.x-position.x, center.y-position.y};
-            return {focus*offset.x, round(aspect*offset.y*focus)};
+            return {__float2int_rn(focus*offset.x+coords.x), __float2int_rn(offset.y*focus+coords.y)};
         }
 
         class Images
@@ -110,9 +112,9 @@ class KernelTester:
             int height = 0;
             __device__ Images(int w, int h) : width{w}, height{h} {};
 
-            __device__ uchar4 getPixel(int imageID, uint2 coords)
+            __device__ uchar4 getPixel(int imageID, int2 coords)
             {
-                uint2 clamped{min(coords.x, IMG_WIDTH), min(coords.y, IMG_HEIGHT)};
+                uint2 clamped{(unsigned int)max(min(coords.x, IMG_WIDTH),0), (unsigned int)max(min(coords.y, IMG_HEIGHT),0)};
                 unsigned int linearCoord = getLinearID(clamped, IMG_WIDTH);
                 return inData[imageID][linearCoord];
             }
@@ -127,7 +129,8 @@ class KernelTester:
         """
 
         kernelSourceMain = """
-        __global__ void process(unsigned char inputImages[GRID_COLS*GRID_ROWS][IMG_WIDTH*IMG_HEIGHT], unsigned char *result, int parameter)
+        extern "C"
+        __global__ void process(unsigned char inputImages[GRID_COLS*GRID_ROWS][IMG_WIDTH*IMG_HEIGHT*4], unsigned char *result, int parameter)
           {
             Images images(IMG_WIDTH, IMG_HEIGHT);
             for(int i=0; i<GRID_COLS*GRID_ROWS; i++)
@@ -152,24 +155,44 @@ class KernelTester:
             for(unsigned int y = 0; y<GRID_ROWS; y++)
                 for(unsigned int x = 0; x<GRID_COLS; x++)
                 {
-                    uint2 focusedCoords = focusCoords(coords, 50, {x,y}, gridCenter);
-                    float weight = 1.0f;// 1.f-maxDistance/squaredDistance({float(x),float(y)}, gridCenter);
+                    int2 focusedCoords = focusCoords(coords, 10, {x,y}, gridCenter);
+                    float weight = maxDistance - squaredDistance({float(x),float(y)}, gridCenter);
                     weightSum += weight;
-                    int gridID = getLinearID({x,y}, GRID_COLS);
+                    int gridID = getLinearID({y,x}, GRID_COLS);
                     uchar4 pixel = images.getPixel(gridID, focusedCoords);
                     float fPixel[]{float(pixel.x), float(pixel.y), float(pixel.z), float(pixel.w)};
                     for(int j=0; j<4; j++)
+                        //sum[j] += fPixel[j]*weight;
                         sum[j] = __fmaf_rn(fPixel[j], weight, sum[j]);
                 }
             for(int j=0; j<4; j++)
                 sum[j] /= weightSum;
-            uchar4 chSum{sum[0], sum[1], sum[2], sum[3]};
+            uchar4 chSum{(unsigned char)sum[0], (unsigned char)sum[1], (unsigned char)sum[2], (unsigned char)sum[3]};
             images.setPixel(coords, chSum);
         }
+
+        __device__ void interpolateImagesTensor(Images images, unsigned char *result, uint2 coords, int focus)
+        {
+
+        // 8x32 32x16 8x16 colxrow
+        //32*r 16*w first column result
+        //preloaded weights load_matrix_sync
+
+                    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> matA;
+                    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> matB;
+                    wmma::fragment<wmma::accumulator, 16, 16, 16, float> matAcc;
+
+                    wmma::fill_fragment(matAcc, 0.0f);
+                    //wmma::fill_fragment(matA, 0.0f);
+                    //wmma::fill_fragment(matB, 0.0f);
+                    //wmma::mma_sync(matAcc, matA, matB, matAcc);
+//                    for(int j=0; j<4; j++)
+//                        sum[j] = matAcc.x[0];
+       }
         """
 
 
-        perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel+kernelSourceMain, options=kernelConstants)
+        perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel+kernelSourceMain, options=kernelConstants, no_extern_c=True)
 
         self.kernels = [ KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (1, 1))]
 
@@ -192,9 +215,6 @@ class KernelTester:
                     result = result.astype(numpy.uint8)
                     resultImage = Image.frombytes("RGBA", (self.width, self.height), result)
                     resultImage.save("./distorted/test.png")
-                    evaluator = eva.Evaluator()
-                    print(evaluator.metrics("./original", "./distorted"))
-                    print("")
 
 try:
     kt = KernelTester()
@@ -202,6 +222,9 @@ try:
     kt.compileKernels()
     kt.allocGPUResources()
     kt.runKernels()
+    evaluator = eva.Evaluator()
+    #print(evaluator.metrics("./original", "./distorted"))
+    print("")
 except Exception as e:
     print(e)
     print(traceback.format_exc())
