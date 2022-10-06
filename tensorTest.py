@@ -8,19 +8,22 @@ from progress.bar import ChargingBar
 import numpy
 import cv2
 import sys
+import os
 import traceback
 
 class KernelParams:
     name = ""
     module = None
     parameter = 0
-    wgDivide = (1,1)
+    blockSize = (16,16,1)
+    blockCount = (1,1)
 
-    def __init__(self, name, module, parameter, wgDivide):
+    def __init__(self, name, module, parameter, blockSize, blockCount):
         self.name = name
         self.module = module
         self.parameter = parameter
-        self.wgDivide = wgDivide
+        self.blockSize = blockSize
+        self.blockCount = blockCount
 
 class KernelTester:
     imageCount = 64
@@ -35,6 +38,8 @@ class KernelTester:
     lfReader = None
     imagesGPU = None
     resultGPU = None
+    weightsGPU = None
+    weightSum = numpy.single(0)
     kernels = []
 
     def loadInput(self):
@@ -54,8 +59,30 @@ class KernelTester:
         self.totalSize = numpy.uint(self.size*self.imageCount)
         self.lfReader = lfReader
 
+    def allocWeightMatrices(self):
+        tensorMatrixSize = (32*2,8)
+        weights = numpy.zeros((tensorMatrixSize[1], tensorMatrixSize[0], 1), numpy.half)
+        gridCenter = numpy.array(((self.cols-1)/2.0, (self.rows-1)/2.0))
+        maxDistance = numpy.linalg.norm(numpy.array((0,0)) -  gridCenter);
+        for y in range(0, self.rows):
+            for x in range(0, self.cols):
+                weight = maxDistance - numpy.linalg.norm(numpy.array((x, y)) - gridCenter)
+                self.weightSum += weight
+                linear = self.cols*y + x
+                for m in range(0, tensorMatrixSize[0]):
+                    for n in range(0, tensorMatrixSize[1]):
+                        if (m == linear):
+                            weights[n][m] = weight
+        self.weightsGPU = cuda.mem_alloc(tensorMatrixSize[0]*tensorMatrixSize[1]*2)
+        cuda.memcpy_htod(self.weightsGPU, weights)
+        self.weightSum = numpy.single(self.weightSum)
+
     def allocGPUResources(self):
-        bar = ChargingBar("Allocating and uploading textures", max=self.cols*self.rows+1)
+        bar = ChargingBar("Allocating and uploading textures", max=self.cols*self.rows+2)
+
+        self.allocWeightMatrices()
+        bar.next()
+
         images = bytes()
         for y in range(0,self.rows):
             for x in range(0, self.cols):
@@ -73,128 +100,18 @@ class KernelTester:
 
     def compileKernels(self):
         kernelConstants = ["-DIMG_WIDTH="+str(self.width), "-DIMG_HEIGHT="+str(self.height), "-DGRID_COLS="+str(self.cols), "-DGRID_ROWS="+str(self.rows)]
-
-        kernelSourceGeneral = """
-        #include <mma.h>
-        using namespace nvcuda;
-
-        typedef struct {float r,g,b;} Pixel;
-        __device__ uint2 getImgCoords()
-        {
-            uint2 coords;
-            coords.x = (threadIdx.x + blockIdx.x * blockDim.x);
-            coords.y = (threadIdx.y + blockIdx.y * blockDim.y);
-            return coords;
-        }
-
-        __device__ unsigned int getLinearID(uint2 coords, int width)
-        {
-            return width*coords.y + coords.x;
-        }
-
-        __device__ float squaredDistance(float2 a, float2 b)
-        {
-            return powf(a.x-b.x,2) + powf(a.y-b.y,2);
-        }
-
-        __device__ int2 focusCoords(uint2 coords, int focus, uint2 position, float2 center)
-        {
-            float2 offset{center.x-position.x, center.y-position.y};
-            return {__float2int_rn(focus*offset.x+coords.x), __float2int_rn(offset.y*focus+coords.y)};
-        }
-
-        class Images
-        {
-            public:
-            uchar4 *inData[GRID_COLS*GRID_ROWS];
-            uchar4 *outData;
-            int width = 0;
-            int height = 0;
-            __device__ Images(int w, int h) : width{w}, height{h} {};
-
-            __device__ uchar4 getPixel(int imageID, int2 coords)
-            {
-                uint2 clamped{(unsigned int)max(min(coords.x, IMG_WIDTH),0), (unsigned int)max(min(coords.y, IMG_HEIGHT),0)};
-                unsigned int linearCoord = getLinearID(clamped, IMG_WIDTH);
-                return inData[imageID][linearCoord];
-            }
-
-            __device__ void setPixel(uint2 coords, uchar4 pixel)
-            {
-                unsigned int linearCoord = getLinearID(coords, IMG_WIDTH);
-                outData[linearCoord] = pixel;
-            }
-        };
-
-        """
-
-        kernelSourceMain = """
-        extern "C"
-        __global__ void process(unsigned char inputImages[GRID_COLS*GRID_ROWS][IMG_WIDTH*IMG_HEIGHT*4], unsigned char *result, int parameter)
-          {
-            Images images(IMG_WIDTH, IMG_HEIGHT);
-            for(int i=0; i<GRID_COLS*GRID_ROWS; i++)
-                images.inData[i] = reinterpret_cast<uchar4*>(inputImages[i]);
-            images.outData = reinterpret_cast<uchar4*>(result);
-
-            uint2 coords = getImgCoords();
-            if(coords.x >= IMG_WIDTH || coords.y >= IMG_HEIGHT)
-                return;
-
-            interpolateImages(images, result, coords, parameter);
-          }
-        """
-
-        kernelSourcePerPixel = """
-        __device__ void interpolateImages(Images images, unsigned char *result, uint2 coords, int focus)
-        {
-            float sum[]{0,0,0,0};
-            float2 gridCenter{GRID_COLS/2.f, GRID_ROWS/2.f};
-            float maxDistance = squaredDistance({0,0}, gridCenter);
-            float weightSum{0};
-            for(unsigned int y = 0; y<GRID_ROWS; y++)
-                for(unsigned int x = 0; x<GRID_COLS; x++)
-                {
-                    int2 focusedCoords = focusCoords(coords, 10, {x,y}, gridCenter);
-                    float weight = maxDistance - squaredDistance({float(x),float(y)}, gridCenter);
-                    weightSum += weight;
-                    int gridID = getLinearID({y,x}, GRID_COLS);
-                    uchar4 pixel = images.getPixel(gridID, focusedCoords);
-                    float fPixel[]{float(pixel.x), float(pixel.y), float(pixel.z), float(pixel.w)};
-                    for(int j=0; j<4; j++)
-                        //sum[j] += fPixel[j]*weight;
-                        sum[j] = __fmaf_rn(fPixel[j], weight, sum[j]);
-                }
-            for(int j=0; j<4; j++)
-                sum[j] /= weightSum;
-            uchar4 chSum{(unsigned char)sum[0], (unsigned char)sum[1], (unsigned char)sum[2], (unsigned char)sum[3]};
-            images.setPixel(coords, chSum);
-        }
-
-        __device__ void interpolateImagesTensor(Images images, unsigned char *result, uint2 coords, int focus)
-        {
-
-        // 8x32 32x16 8x16 colxrow
-        //32*r 16*w first column result
-        //preloaded weights load_matrix_sync
-
-                    wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> matA;
-                    wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> matB;
-                    wmma::fragment<wmma::accumulator, 16, 16, 16, float> matAcc;
-
-                    wmma::fill_fragment(matAcc, 0.0f);
-                    //wmma::fill_fragment(matA, 0.0f);
-                    //wmma::fill_fragment(matB, 0.0f);
-                    //wmma::mma_sync(matAcc, matA, matB, matAcc);
-//                    for(int j=0; j<4; j++)
-//                        sum[j] = matAcc.x[0];
-       }
-        """
-
-
+        scriptPath = os.path.dirname(os.path.realpath(__file__))
+        kernelSourceMain =  open(scriptPath+"/cudaKernels/mainInterpolation.cu", "r").read()
+        kernelSourceGeneral = open(scriptPath+"/cudaKernels/generalInterpolation.cu", "r").read()
+        kernelSourcePerWarp = open(scriptPath+"/cudaKernels/perWarpInterpolation.cu", "r").read()
+        kernelSourcePerPixel = open(scriptPath+"/cudaKernels/perPixelInterpolation.cu", "r").read()
         perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel+kernelSourceMain, options=kernelConstants, no_extern_c=True)
+        perWarpKernel = SourceModule(kernelSourceGeneral+kernelSourcePerWarp+kernelSourceMain, options=kernelConstants, no_extern_c=True)
 
-        self.kernels = [ KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (1, 1))]
+        warpSize = 32
+
+        self.kernels = [ KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (16,16,1), (int(self.width/(16)), int(self.height/(16)))),
+                         KernelParams("Per warp", perWarpKernel, numpy.int32(1), (warpSize,8,1), (int(self.width), int(self.height/(8))))]
 
     def runKernels(self):
         result = numpy.zeros((self.height, self.width, self.depth), numpy.uint8)
@@ -205,7 +122,7 @@ class KernelTester:
                 end=cuda.Event()
                 start.record()
                 func = kernel.module.get_function("process")
-                func(self.imagesGPU, self.resultGPU, kernel.parameter, block=(16, 16, 1), grid=(int(self.width/(16/kernel.wgDivide[0])), int(self.height/(16/kernel.wgDivide[1]))), shared=0)
+                func(self.imagesGPU, self.resultGPU, self.weightsGPU, self.weightSum, kernel.parameter, block=kernel.blockSize, grid=kernel.blockCount, shared=0)
                 end.record()
                 end.synchronize()
                 print("Time: "+str(start.time_till(end))+" ms")
@@ -215,6 +132,8 @@ class KernelTester:
                     result = result.astype(numpy.uint8)
                     resultImage = Image.frombytes("RGBA", (self.width, self.height), result)
                     resultImage.save("./distorted/test.png")
+                    evaluator = eva.Evaluator()
+                    #print(evaluator.metrics("./original", "./distorted"))
 
 try:
     kt = KernelTester()
@@ -222,8 +141,6 @@ try:
     kt.compileKernels()
     kt.allocGPUResources()
     kt.runKernels()
-    evaluator = eva.Evaluator()
-    #print(evaluator.metrics("./original", "./distorted"))
     print("")
 except Exception as e:
     print(e)
