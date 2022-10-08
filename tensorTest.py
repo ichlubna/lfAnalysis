@@ -26,6 +26,7 @@ class KernelParams:
         self.blockCount = blockCount
 
 class KernelTester:
+    renderedViewsCount = 8
     imageCount = 64
     numberOfMeasurements = 5
     width = 0
@@ -34,12 +35,13 @@ class KernelTester:
     rows = 0
     depth = 4
     size = 0
+    warpSize = 32
     totalSize = 0
     lfReader = None
     imagesGPU = None
     resultGPU = None
-    weightsGPU = None
-    weightSum = numpy.single(0)
+    weightMatrixGPU = None
+    weightSumsGPU = None
     kernels = []
 
     def loadInput(self):
@@ -59,27 +61,47 @@ class KernelTester:
         self.totalSize = numpy.uint(self.size*self.imageCount)
         self.lfReader = lfReader
 
-    def allocWeightMatrices(self):
-        tensorMatrixSize = (32*2,8)
-        weights = numpy.zeros((tensorMatrixSize[1], tensorMatrixSize[0], 1), numpy.half)
-        gridCenter = numpy.array(((self.cols-1)/2.0, (self.rows-1)/2.0))
-        maxDistance = numpy.linalg.norm(numpy.array((0,0)) -  gridCenter);
+    def computeWeights(self, coords):
+        weights = numpy.zeros(self.cols*self.rows, numpy.half)
+        maxDistance = numpy.linalg.norm(numpy.array((0,0)) - numpy.array(self.cols, self.rows))
+        weightSum = 0
         for y in range(0, self.rows):
             for x in range(0, self.cols):
-                weight = maxDistance - numpy.linalg.norm(numpy.array((x, y)) - gridCenter)
-                self.weightSum += weight
+                weight = maxDistance - numpy.linalg.norm(numpy.array((x, y)) - numpy.array(coords))
                 linear = self.cols*y + x
-                for m in range(0, tensorMatrixSize[0]):
-                    for n in range(0, tensorMatrixSize[1]):
-                        if (m == linear):
-                            weights[n][m] = weight
-        self.weightsGPU = cuda.mem_alloc(tensorMatrixSize[0]*tensorMatrixSize[1]*2)
-        cuda.memcpy_htod(self.weightsGPU, weights)
-        self.weightSum = numpy.single(self.weightSum)
+                weights[linear] = numpy.single(weight)
+                weightSum += weight
+        return weights, numpy.single(weightSum)
+
+    def createViewTrajectory(self, start, end):
+        stepX = (end[0]-start[0])/self.renderedViewsCount
+        stepY = (end[1]-start[1])/self.renderedViewsCount
+        trajectory = []
+        for i in range(0, self.renderedViewsCount):
+            trajectory.append((start[0]+stepX*i, start[1]+stepY*i))
+        return trajectory
+
+    def createTrajectoryWeightMatrix(self, start, end):
+        trajectory = self.createViewTrajectory(start, end)
+        weightVectors = []
+        weightSums = []
+        for coords in trajectory:
+            weights, weightSum = self.computeWeights(coords)
+            weightSums.append(weightSum)
+            weightVectors.append(weights)
+        weightMatrix= numpy.c_[ weightVectors ].T
+        return weightSums, weightMatrix
+
+    def allocWeightMatrices(self):
+        weightSums, weightMatrix = self.createTrajectoryWeightMatrix((0,0), (self.cols, self.rows))
+        weightSums = numpy.asarray(weightSums, numpy.half)
+        self.weightMatrixGPU = cuda.mem_alloc(weightMatrix.size*2)
+        cuda.memcpy_htod(self.weightMatrixGPU, weightMatrix)
+        self.weightSumsGPU = cuda.mem_alloc(weightSums.size*2)
+        cuda.memcpy_htod(self.weightSumsGPU, weightSums)
 
     def allocGPUResources(self):
         bar = ChargingBar("Allocating and uploading textures", max=self.cols*self.rows+2)
-
         self.allocWeightMatrices()
         bar.next()
 
@@ -99,19 +121,21 @@ class KernelTester:
         bar.finish()
 
     def compileKernels(self):
-        kernelConstants = ["-DIMG_WIDTH="+str(self.width), "-DIMG_HEIGHT="+str(self.height), "-DGRID_COLS="+str(self.cols), "-DGRID_ROWS="+str(self.rows)]
+        kernelConstants = [ "-DIMG_WIDTH="+str(self.width), "-DIMG_HEIGHT="+str(self.height),
+                            "-DGRID_COLS="+str(self.cols), "-DGRID_ROWS="+str(self.rows),
+                            "-DWARP_SIZE="+str(self.warpSize), "-DWEIGHTS_COLS="+str(self.renderedViewsCount),
+                            "-DWEIGHTS_ROWS="+str(self.cols*self.rows),]
         scriptPath = os.path.dirname(os.path.realpath(__file__))
         kernelSourceMain =  open(scriptPath+"/cudaKernels/mainInterpolation.cu", "r").read()
         kernelSourceGeneral = open(scriptPath+"/cudaKernels/generalInterpolation.cu", "r").read()
         kernelSourcePerWarp = open(scriptPath+"/cudaKernels/perWarpInterpolation.cu", "r").read()
         kernelSourcePerPixel = open(scriptPath+"/cudaKernels/perPixelInterpolation.cu", "r").read()
+
         perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel+kernelSourceMain, options=kernelConstants, no_extern_c=True)
-        perWarpKernel = SourceModule(kernelSourceGeneral+kernelSourcePerWarp+kernelSourceMain, options=kernelConstants, no_extern_c=True)
+        #perWarpKernel = SourceModule(kernelSourceGeneral+kernelSourcePerWarp+kernelSourceMain, options=kernelConstants, no_extern_c=True)
 
-        warpSize = 32
-
-        self.kernels = [ KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (16,16,1), (int(self.width/(16)), int(self.height/(16)))),
-                         KernelParams("Per warp", perWarpKernel, numpy.int32(1), (warpSize,8,1), (int(self.width), int(self.height/(8))))]
+        self.kernels = [ KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (16,16,1), (int(self.width/(16)), int(self.height/(16)))),]
+                         #KernelParams("Per warp", perWarpKernel, numpy.int32(1), (self.warpSize,8,1), (int(self.width), int(self.height/(8))))]
 
     def runKernels(self):
         result = numpy.zeros((self.height, self.width, self.depth), numpy.uint8)
@@ -122,7 +146,7 @@ class KernelTester:
                 end=cuda.Event()
                 start.record()
                 func = kernel.module.get_function("process")
-                func(self.imagesGPU, self.resultGPU, self.weightsGPU, self.weightSum, kernel.parameter, block=kernel.blockSize, grid=kernel.blockCount, shared=0)
+                func(self.imagesGPU, self.resultGPU, self.weightMatrixGPU, self.weightSumsGPU, kernel.parameter, block=kernel.blockSize, grid=kernel.blockCount, shared=0)
                 end.record()
                 end.synchronize()
                 print("Time: "+str(start.time_till(end))+" ms")

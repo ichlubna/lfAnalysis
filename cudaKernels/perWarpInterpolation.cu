@@ -2,9 +2,14 @@
 //32*r 16*w first column result
 //preloaded weights load_matrix_sync
 
+__device__ bool coordsOutside(uint2 coords)
+{
+    if(coords.x >= IMG_WIDTH*WARP_SIZE || coords.y >= IMG_HEIGHT)
+        return false;
+}
+
 __device__ void interpolateImages(Images images, unsigned char *result, half *weights, half weightSum, uint2 coords, int focus)
 {
-    constexpr int WARP_SIZE{32};
     float2 gridCenter{GRID_COLS/2.f, GRID_ROWS/2.f};
     uint2 warpCoords{coords.x/WARP_SIZE, coords.y};
     int threadID = threadIdx.x;
@@ -12,10 +17,10 @@ __device__ void interpolateImages(Images images, unsigned char *result, half *we
     float sum[]{0,0,0,0};
     for(int i=0; i<2; i++)
     {
-        int linearID = i*WARP_SIZE + threadID;
-        unsigned int x = linearID % GRID_COLS;
-        unsigned int y = linearID / GRID_ROWS;
-        int2 focusedCoords = focusCoords(coords, 10, {x,y}, gridCenter);
+        int linearID =  i*WARP_SIZE + threadID;
+        unsigned int y = linearID % GRID_COLS;
+        unsigned int x = linearID / GRID_COLS;
+        int2 focusedCoords = focusCoords(warpCoords, 10, {x,y}, gridCenter);
         uchar4 pixel = images.getPixel(linearID, focusedCoords);
         //half hPixel[]{half(pixel.x), half(pixel.y), half(pixel.z), half(pixel.w)};
         //half weight{weights[linearID]};
@@ -24,17 +29,16 @@ __device__ void interpolateImages(Images images, unsigned char *result, half *we
         for(int j=0; j<4; j++)
             sum[j] += hPixel[j]*weight;
     }
-    for(int i=1; i<=16; i*=2)
-        for(int j=0; j<4; j++)
+    for(int j=0; j<4; j++)
+        for (int i = WARP_SIZE/2; i > 0; i /= 2) 
             sum[j] += __shfl_down_sync(0xffffffff, sum[j], i);
-
     if(threadID == 0)
     {
         for(int j=0; j<4; j++)
             sum[j] /= (float)weightSum;
         //uchar4 chSum{(unsigned char)(int)sum[0], (unsigned char)(int)sum[1], (unsigned char)(int)sum[2], (unsigned char)(int)sum[3]};
         uchar4 chSum{(unsigned char)sum[0], (unsigned char)sum[1], (unsigned char)sum[2], (unsigned char)sum[3]};
-        images.setPixel(coords, chSum);
+        images.setPixel(warpCoords, chSum);
     }
 /*
             wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> matA;

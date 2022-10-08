@@ -41,11 +41,44 @@ class Images
             unsigned int linearCoord = getLinearID(clamped, IMG_WIDTH);
             return inData[imageID][linearCoord];
         }
+ 
+        template <typename T>
+        class PixelArray
+        {
+            public:
+            __device__ PixelArray(){};
+            __device__ PixelArray(uchar4 pixel) : channels{T(pixel.x), T(pixel.y), T(pixel.z), T(pixel.w)}{};
+            static constexpr int CHANNELS_COUNT{4};
+            T channels[CHANNELS_COUNT]{0,0,0,0};
+            __device__ T& operator[](int index){return channels[index];}
+            __device__ uchar4 getUchar4() {return {(unsigned char)channels[0], (unsigned char)channels[1], (unsigned char)channels[2], (unsigned char)channels[3]};}
+            __device__ void addWeighted(T weight, PixelArray<T> value) 
+            {    
+                for(int j=0; j<CHANNELS_COUNT; j++)
+                    //sum[j] += fPixel[j]*weight;
+                    channels[j] = __fmaf_rn(value[j], weight, channels[j]);
+            }
+            __device__ PixelArray<T> operator/= (const T &divisor)
+            {
+                for(int j=0; j<CHANNELS_COUNT; j++)
+                    this->channels[j] /= divisor;
+                return *this;
+            }
+        };
+
+        template <typename T>
+        __device__ PixelArray<T> getPixelAsArray(int imageID, int2 coords)
+        {
+            uchar4 pixel = getPixel(imageID, coords);
+            PixelArray<T> array{pixel};
+            return array;
+        }
 
         __device__ void setPixel(uint2 coords, uchar4 pixel)
         {
             unsigned int linearCoord = getLinearID(coords, IMG_WIDTH);
             outData[linearCoord] = pixel;
         }
+
 };
 
