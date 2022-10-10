@@ -4,7 +4,7 @@ __device__ bool coordsOutside(uint2 coords)
         return false;
 }
 
-__device__ void interpolateImages(Images images, unsigned char *result, half weights[WEIGHTS_ROWS][WEIGHTS_COLS], half weightSums[WEIGHTS_ROWS], uint2 coords, int focus)
+__device__ void interpolateImages(Images images, unsigned char *result, half weights[WEIGHTS_ROWS][WEIGHTS_COLS], uint2 coords, int focus)
 {
     Images::PixelArray<float> sum;
     float2 gridCenter{(GRID_COLS-1)/2.f, (GRID_ROWS-1)/2.f};
@@ -17,6 +17,5 @@ __device__ void interpolateImages(Images images, unsigned char *result, half wei
             auto pixel = images.getPixelAsArray<float>(gridID, focusedCoords);
             sum.addWeighted(weight, pixel);
         }
-    sum /= weightSums[0];
     images.setPixel(coords, sum.getUchar4());
 }

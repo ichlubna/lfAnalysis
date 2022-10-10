@@ -41,7 +41,6 @@ class KernelTester:
     imagesGPU = None
     resultGPU = None
     weightMatrixGPU = None
-    weightSumsGPU = None
     kernels = []
 
     def loadInput(self):
@@ -71,7 +70,9 @@ class KernelTester:
                 linear = self.cols*y + x
                 weights[linear] = numpy.single(weight)
                 weightSum += weight
-        return weights, numpy.single(weightSum)
+        for i in range(0, weights.size):
+            weights[i] /= weightSum
+        return weights
 
     def createViewTrajectory(self, start, end):
         stepX = (end[0]-start[0])/self.renderedViewsCount
@@ -84,21 +85,17 @@ class KernelTester:
     def createTrajectoryWeightMatrix(self, start, end):
         trajectory = self.createViewTrajectory(start, end)
         weightVectors = []
-        weightSums = []
         for coords in trajectory:
-            weights, weightSum = self.computeWeights(coords)
-            weightSums.append(weightSum)
+            weights = self.computeWeights(coords)
             weightVectors.append(weights)
         weightMatrix= numpy.c_[ weightVectors ].T
-        return weightSums, weightMatrix
+        return weightMatrix
 
     def allocWeightMatrices(self):
-        weightSums, weightMatrix = self.createTrajectoryWeightMatrix((0,0), (self.cols, self.rows))
-        weightSums = numpy.asarray(weightSums, numpy.half)
+        weightMatrix = self.createTrajectoryWeightMatrix((0,0), (self.cols, self.rows))
+        byteWeights = weightMatrix.tobytes()
         self.weightMatrixGPU = cuda.mem_alloc(weightMatrix.size*2)
-        cuda.memcpy_htod(self.weightMatrixGPU, weightMatrix)
-        self.weightSumsGPU = cuda.mem_alloc(weightSums.size*2)
-        cuda.memcpy_htod(self.weightSumsGPU, weightSums)
+        cuda.memcpy_htod(self.weightMatrixGPU, byteWeights)
 
     def allocGPUResources(self):
         bar = ChargingBar("Allocating and uploading textures", max=self.cols*self.rows+2)
@@ -136,6 +133,7 @@ class KernelTester:
         #perWarpKernel = SourceModule(kernelSourceGeneral+kernelSourcePerWarp+kernelSourceMain, options=kernelConstants, no_extern_c=True)
         tensorInterpolationKernel = SourceModule(kernelSourceGeneral+kernelSourceTensorInter+kernelSourceMain, options=kernelConstants, no_extern_c=True)
 
+        #self.kernels = [  KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (16,16,1), (int(self.width/(16)), int(self.height/(16))))]
         self.kernels = [ KernelParams("Tensor", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)))]
                        #  KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (16,16,1), (int(self.width/(16)), int(self.height/(16)))),
 
@@ -150,7 +148,7 @@ class KernelTester:
                 end=cuda.Event()
                 start.record()
                 func = kernel.module.get_function("process")
-                func(self.imagesGPU, self.resultGPU, self.weightMatrixGPU, self.weightSumsGPU, kernel.parameter, block=kernel.blockSize, grid=kernel.blockCount, shared=0)
+                func(self.imagesGPU, self.resultGPU, self.weightMatrixGPU, kernel.parameter, block=kernel.blockSize, grid=kernel.blockCount, shared=0)
                 end.record()
                 end.synchronize()
                 print("Time: "+str(start.time_till(end))+" ms")
@@ -161,7 +159,7 @@ class KernelTester:
                     resultImage = Image.frombytes("RGBA", (self.width, self.height), result)
                     resultImage.save("./distorted/test.png")
                     evaluator = eva.Evaluator()
-                    #print(evaluator.metrics("./original", "./distorted"))
+                    print(evaluator.metrics("./original", "./distorted"))
 
 try:
     kt = KernelTester()
