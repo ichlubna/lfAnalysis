@@ -40,16 +40,4 @@ __device__ void interpolateImages(Images images, unsigned char *result, half *we
         uchar4 chSum{(unsigned char)sum[0], (unsigned char)sum[1], (unsigned char)sum[2], (unsigned char)sum[3]};
         images.setPixel(warpCoords, chSum);
     }
-/*
-            wmma::fragment<wmma::matrix_a, 16, 16, 16, half, wmma::col_major> matA;
-            wmma::fragment<wmma::matrix_b, 16, 16, 16, half, wmma::row_major> matB;
-            wmma::fragment<wmma::accumulator, 16, 16, 16, float> matAcc;
-
-            wmma::fill_fragment(matAcc, 0.0f);
-            wmma::fill_fragment(matA, 0.0f);
-            wmma::fill_fragment(matB, 0.0f);
-            wmma::mma_sync(matAcc, matA, matB, matAcc);
-            for(int j=0; j<4; j++)
-                sum[j] = matAcc.x[0];
-*/
 }

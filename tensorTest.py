@@ -130,11 +130,15 @@ class KernelTester:
         kernelSourceGeneral = open(scriptPath+"/cudaKernels/generalInterpolation.cu", "r").read()
         kernelSourcePerWarp = open(scriptPath+"/cudaKernels/perWarpInterpolation.cu", "r").read()
         kernelSourcePerPixel = open(scriptPath+"/cudaKernels/perPixelInterpolation.cu", "r").read()
+        kernelSourceTensorInter = open(scriptPath+"/cudaKernels/tensorInterpolation.cu", "r").read()
 
         perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel+kernelSourceMain, options=kernelConstants, no_extern_c=True)
         #perWarpKernel = SourceModule(kernelSourceGeneral+kernelSourcePerWarp+kernelSourceMain, options=kernelConstants, no_extern_c=True)
+        tensorInterpolationKernel = SourceModule(kernelSourceGeneral+kernelSourceTensorInter+kernelSourceMain, options=kernelConstants, no_extern_c=True)
 
-        self.kernels = [ KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (16,16,1), (int(self.width/(16)), int(self.height/(16)))),]
+        self.kernels = [ KernelParams("Tensor", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)))]
+                       #  KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (16,16,1), (int(self.width/(16)), int(self.height/(16)))),
+
                          #KernelParams("Per warp", perWarpKernel, numpy.int32(1), (self.warpSize,8,1), (int(self.width), int(self.height/(8))))]
 
     def runKernels(self):

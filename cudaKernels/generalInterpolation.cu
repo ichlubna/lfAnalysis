@@ -31,9 +31,11 @@ class Images
     public:
         uchar4 *inData[GRID_COLS*GRID_ROWS];
         uchar4 *outData;
+        unsigned char *rawOutData;
+        //unsigned char *rawInData[GRID_COLS*GRID_ROWS][IMG_WIDTH*IMG_HEIGHT*4];
         int width = 0;
         int height = 0;
-        __device__ Images(int w, int h) : width{w}, height{h} {};
+        __device__ Images(int w, int h, unsigned char *o) : width{w}, height{h}, rawOutData{o}{};
 
         __device__ uchar4 getPixel(int imageID, int2 coords)
         {
