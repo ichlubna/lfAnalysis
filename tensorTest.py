@@ -18,14 +18,16 @@ class KernelParams:
     parameter = 0
     blockSize = (16,16,1)
     blockCount = (1,1)
+    sharedSize = 0
 
-    def __init__(self, name, outDir, module, parameter, blockSize, blockCount):
+    def __init__(self, name, outDir, module, parameter, blockSize, blockCount, sharedSize):
         self.name = name
         self.outDir = outDir
         self.module = module
         self.parameter = parameter
         self.blockSize = blockSize
         self.blockCount = blockCount
+        self.sharedSize = sharedSize
 
 class KernelTester:
     renderedViewsCount = 8
@@ -135,8 +137,8 @@ class KernelTester:
         #perWarpKernel = SourceModule(kernelSourceGeneral+kernelSourcePerWarp+kernelSourceMain, options=kernelConstants, no_extern_c=True)
         tensorInterpolationKernel = SourceModule(kernelSourceGeneral+kernelSourceTensorInter+kernelSourceMain, options=kernelConstants, no_extern_c=True)
 
-        self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(1), (256,1,1), (int(self.width/(256)), int(self.height))),
-                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)))]
+        self.kernels = [#KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(1), (256,1,1), (int(self.width/(256)), int(self.height)), 0),
+                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)), 5000 )]
 
                          #KernelParams("Per warp", perWarpKernel, numpy.int32(1), (self.warpSize,8,1), (int(self.width), int(self.height/(8))))]
 
@@ -150,7 +152,7 @@ class KernelTester:
                 end=cuda.Event()
                 start.record()
                 func = kernel.module.get_function("process")
-                func(self.imagesGPU, self.resultGPU, self.weightMatrixGPU, kernel.parameter, block=kernel.blockSize, grid=kernel.blockCount, shared=0)
+                func(self.imagesGPU, self.resultGPU, self.weightMatrixGPU, kernel.parameter, block=kernel.blockSize, grid=kernel.blockCount, shared=kernel.sharedSize)
                 end.record()
                 end.synchronize()
                 print("Time: "+str(start.time_till(end))+" ms")

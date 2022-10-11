@@ -1,3 +1,5 @@
+//(8*8*4*16*2 + 64*8*2 + 8*8*4*8*2)/1000
+
 __device__ bool coordsOutside(uint2 coords)
 {
     constexpr unsigned int PX_PER_WARP{8};
@@ -7,7 +9,8 @@ __device__ bool coordsOutside(uint2 coords)
 
 __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIGHTS_COLS], uint2 coords, int focus)
 {
-    constexpr int MAT_PX_COUNT{8}; 
+    constexpr int MAT_PX_COUNT{8};
+    constexpr int WARP_COUNT{8}; 
     constexpr int OUT_VIEWS_COUNT{WEIGHTS_COLS}; 
     constexpr int MAT_VIEW_COUNT{16};
     constexpr int CHANNELS{4};
@@ -19,10 +22,14 @@ __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIG
     int matrixRowID = threadIdx.x%WARP_SIZE;//coords.x%WARP_SIZE;
     float2 gridCenter{(GRID_COLS-1)/2.f, (GRID_ROWS-1)/2.f};
 
-    __shared__ half pixelMatrix[256/WARP_SIZE][MAT_PX_COUNT*CHANNELS][MAT_VIEW_COUNT];
+    extern __shared__ half localMemory[];
+    MemoryPartitioner memoryPartitioner(localMemory);
+    
+    __shared__ half pixelMatrix[WARP_COUNT][MAT_PX_COUNT*CHANNELS][MAT_VIEW_COUNT];
  
-    __shared__ half localWeights[WEIGHTS_ROWS][WEIGHTS_COLS];
-    loadWeights(weights[0], localWeights[0]); 
+    //__shared__ half localWeights[WEIGHTS_ROWS][WEIGHTS_COLS];
+    auto localWeights = memoryPartitioner.getMatrix(1, WEIGHTS_ROWS, WEIGHTS_COLS);
+    loadWeights(weights[0], localWeights.data); 
      
     __syncthreads();
 
@@ -34,7 +41,7 @@ __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIG
     int batchCount = (GRID_COLS*GRID_ROWS)/MAT_VIEW_COUNT;
     for(int i=0; i<batchCount; i++)
     {
-        wmma::load_matrix_sync(matWeights, localWeights[i*MAT_VIEW_COUNT], OUT_VIEWS_COUNT);
+        wmma::load_matrix_sync(matWeights, localWeights.rowPtr(i*MAT_VIEW_COUNT), OUT_VIEWS_COUNT);
 
         for(int j=0; j<MAT_VIEW_COUNT; j++)
         {
@@ -52,7 +59,6 @@ __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIG
     __shared__ half resultMatrix[256/WARP_SIZE][MAT_PX_COUNT*CHANNELS][OUT_VIEWS_COUNT];
     wmma::store_matrix_sync(resultMatrix[warpID][0], matResult, OUT_VIEWS_COUNT, wmma::mem_row_major);
     
-    //for all views udelat
     for(int i=0; i<OUT_VIEWS_COUNT; i++) 
         reinterpret_cast<unsigned char*>(images.outData[i])[coords.y*IMG_WIDTH*CHANNELS + coords.x] = round((float)resultMatrix[warpID][matrixRowID][i]);
 }

@@ -88,3 +88,54 @@ __device__ static void loadWeights(half *inData, half *data)
     int *intIn = reinterpret_cast<int*>(inData);
     intLocal[threadIdx.x] = intIn[threadIdx.x]; 
 }
+
+class Matrix
+{
+    public:
+    __device__ Matrix(half* inData, int inCount, int inRows, int inCols) : data{inData}, rows{inRows}, cols{inCols}, count{inCount}, matrixSize{inRows*inCols}{};
+    __device__ half& operator () (int x, int y)
+    {
+        return data[y*cols + y];
+    }
+    
+    __device__ half& operator () (int z, int x, int y)
+    {
+        return data[z*matrixSize + y*cols + y];
+    }
+
+    __device__ half* rowPtr(int i)
+    {
+        return data+i*cols;
+    }
+    
+    __device__ half* matPtr(int i)
+    {
+        return data+i*matrixSize;
+    }
+    half *data;
+    int rows;
+    int cols;
+    int count;
+    int matrixSize;
+};
+
+class MemoryPartitioner
+{
+    public:
+    __device__ MemoryPartitioner(half *inMemory)
+    {
+        memory = inMemory; 
+    }
+
+    __device__ Matrix getMatrix(int count, int rows, int cols)
+    {
+        int size = rows*cols*count;
+        half *arr = &(memory[consumed]);
+        consumed += size;
+        return {arr, count, rows, cols};
+    }
+    private:
+    half *memory;
+    unsigned int consumed{0};
+}; 
+
