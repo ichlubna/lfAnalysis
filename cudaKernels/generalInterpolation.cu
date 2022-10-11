@@ -30,12 +30,10 @@ class Images
 {
     public:
         uchar4 *inData[GRID_COLS*GRID_ROWS];
-        uchar4 *outData;
-        unsigned char *rawOutData;
-        //unsigned char *rawInData[GRID_COLS*GRID_ROWS][IMG_WIDTH*IMG_HEIGHT*4];
+        uchar4 *outData[WEIGHTS_COLS];
         int width = 0;
         int height = 0;
-        __device__ Images(int w, int h, unsigned char *o) : width{w}, height{h}, rawOutData{o}{};
+        __device__ Images(int w, int h) : width{w}, height{h}{};
 
         __device__ uchar4 getPixel(int imageID, int2 coords)
         {
@@ -76,11 +74,17 @@ class Images
             return array;
         }
 
-        __device__ void setPixel(uint2 coords, uchar4 pixel)
+        __device__ void setPixel(int imageID, uint2 coords, uchar4 pixel)
         {
             unsigned int linearCoord = getLinearID(coords, IMG_WIDTH);
-            outData[linearCoord] = pixel;
+            outData[imageID][linearCoord] = pixel;
         }
 
 };
 
+__device__ static void loadWeights(half *inData, half *data)
+{
+    int *intLocal = reinterpret_cast<int*>(data);
+    int *intIn = reinterpret_cast<int*>(inData);
+    intLocal[threadIdx.x] = intIn[threadIdx.x]; 
+}

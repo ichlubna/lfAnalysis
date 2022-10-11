@@ -13,13 +13,15 @@ import traceback
 
 class KernelParams:
     name = ""
+    outDir = ""
     module = None
     parameter = 0
     blockSize = (16,16,1)
     blockCount = (1,1)
 
-    def __init__(self, name, module, parameter, blockSize, blockCount):
+    def __init__(self, name, outDir, module, parameter, blockSize, blockCount):
         self.name = name
+        self.outDir = outDir
         self.module = module
         self.parameter = parameter
         self.blockSize = blockSize
@@ -113,7 +115,7 @@ class KernelTester:
 
         self.imagesGPU = cuda.mem_alloc(int(self.totalSize))
         cuda.memcpy_htod(self.imagesGPU, images)
-        self.resultGPU = cuda.mem_alloc(self.size)
+        self.resultGPU = cuda.mem_alloc(self.size*self.renderedViewsCount)
         bar.next()
         bar.finish()
 
@@ -121,7 +123,7 @@ class KernelTester:
         kernelConstants = [ "-DIMG_WIDTH="+str(self.width), "-DIMG_HEIGHT="+str(self.height),
                             "-DGRID_COLS="+str(self.cols), "-DGRID_ROWS="+str(self.rows),
                             "-DWARP_SIZE="+str(self.warpSize), "-DWEIGHTS_COLS="+str(self.renderedViewsCount),
-                            "-DWEIGHTS_ROWS="+str(self.cols*self.rows),]
+                            "-DWEIGHTS_ROWS="+str(self.cols*self.rows)]
         scriptPath = os.path.dirname(os.path.realpath(__file__))
         kernelSourceMain =  open(scriptPath+"/cudaKernels/mainInterpolation.cu", "r").read()
         kernelSourceGeneral = open(scriptPath+"/cudaKernels/generalInterpolation.cu", "r").read()
@@ -133,14 +135,14 @@ class KernelTester:
         #perWarpKernel = SourceModule(kernelSourceGeneral+kernelSourcePerWarp+kernelSourceMain, options=kernelConstants, no_extern_c=True)
         tensorInterpolationKernel = SourceModule(kernelSourceGeneral+kernelSourceTensorInter+kernelSourceMain, options=kernelConstants, no_extern_c=True)
 
-        #self.kernels = [  KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (16,16,1), (int(self.width/(16)), int(self.height/(16))))]
-        self.kernels = [ KernelParams("Tensor", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)))]
-                       #  KernelParams("Per pixel", perPixelKernel, numpy.int32(1), (16,16,1), (int(self.width/(16)), int(self.height/(16)))),
+        self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(1), (256,1,1), (int(self.width/(256)), int(self.height))),
+                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)))]
 
                          #KernelParams("Per warp", perWarpKernel, numpy.int32(1), (self.warpSize,8,1), (int(self.width), int(self.height/(8))))]
 
     def runKernels(self):
-        result = numpy.zeros((self.height, self.width, self.depth), numpy.uint8)
+        #result = numpy.zeros((self.height, self.width, self.depth), numpy.uint8)
+        result = numpy.zeros((self.size*self.renderedViewsCount, 1, 1), numpy.uint8)
         for kernel in self.kernels:
             print(kernel.name)
             for i in range(0,self.numberOfMeasurements):
@@ -154,12 +156,19 @@ class KernelTester:
                 print("Time: "+str(start.time_till(end))+" ms")
 
                 if i == self.numberOfMeasurements-1:
+                    bar = ChargingBar("Downloading data and storing", max=self.renderedViewsCount+2)
                     cuda.memcpy_dtoh(result, self.resultGPU)
+                    bar.next()
                     result = result.astype(numpy.uint8)
-                    resultImage = Image.frombytes("RGBA", (self.width, self.height), result)
-                    resultImage.save("./distorted/test.png")
-                    evaluator = eva.Evaluator()
-                    print(evaluator.metrics("./original", "./distorted"))
+                    resultParts = numpy.split(result, self.renderedViewsCount)
+                    bar.next()
+                    for j in range(0, self.renderedViewsCount):
+                        resultImage = Image.frombytes("RGBA", (self.width, self.height), resultParts[j])
+                        path = "./"+kernel.outDir+str(j)+".png"
+                        os.makedirs(os.path.dirname(path), exist_ok=True)
+                        resultImage.save(path)
+                        bar.next()
+                    bar.finish()
 
 try:
     kt = KernelTester()
@@ -167,6 +176,10 @@ try:
     kt.compileKernels()
     kt.allocGPUResources()
     kt.runKernels()
+    evaluator = eva.Evaluator()
+    print("Comparing the results")
+    print("Tensor interpolation:")
+    print(evaluator.metrics("./classicInterpolation", "./tensorInterpolation"))
     print("")
 except Exception as e:
     print(e)
