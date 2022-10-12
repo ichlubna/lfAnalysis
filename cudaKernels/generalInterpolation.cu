@@ -82,41 +82,39 @@ class Images
 
 };
 
-__device__ static void loadWeights(half *inData, half *data)
+__device__ static void loadWeightsSync(half *inData, half *data)
 {
     int *intLocal = reinterpret_cast<int*>(data);
     int *intIn = reinterpret_cast<int*>(inData);
     intLocal[threadIdx.x] = intIn[threadIdx.x]; 
+    __syncthreads();
 }
 
 class Matrix
 {
     public:
-    __device__ Matrix(half* inData, int inCount, int inRows, int inCols) : data{inData}, rows{inRows}, cols{inCols}, count{inCount}, matrixSize{inRows*inCols}{};
-    __device__ half& operator () (int x, int y)
+    __device__ Matrix(half* inData, int inCount, int inRows, int inCols) : data{inData}, rows{inRows}, cols{inCols}, count{inCount}, matrixSize{inRows*inCols}{}; 
+    __device__ half& operator () (int id, int row, int col)
     {
-        return data[y*cols + y];
-    }
-    
-    __device__ half& operator () (int z, int x, int y)
-    {
-        return data[z*matrixSize + y*cols + y];
+        return data[linearID(id,row,col)];
     }
 
-    __device__ half* rowPtr(int i)
+    __device__ half* ptr(int id, int row, int col)
     {
-        return data+i*cols;
+        return data+linearID(id,row,col);
     }
     
-    __device__ half* matPtr(int i)
-    {
-        return data+i*matrixSize;
-    }
     half *data;
+
+    private:
     int rows;
     int cols;
     int count;
     int matrixSize;
+    __device__ int linearID(int id, int row, int col)
+    {
+        return id*matrixSize + row*cols + col;
+    }
 };
 
 class MemoryPartitioner
@@ -137,5 +135,5 @@ class MemoryPartitioner
     private:
     half *memory;
     unsigned int consumed{0};
-}; 
+};
 

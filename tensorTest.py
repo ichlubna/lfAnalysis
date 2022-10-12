@@ -32,7 +32,7 @@ class KernelParams:
 class KernelTester:
     renderedViewsCount = 8
     imageCount = 64
-    numberOfMeasurements = 5
+    numberOfMeasurements = 10
     width = 0
     height = 0
     cols = 0
@@ -120,6 +120,7 @@ class KernelTester:
         self.resultGPU = cuda.mem_alloc(self.size*self.renderedViewsCount)
         bar.next()
         bar.finish()
+        print("")
 
     def compileKernels(self):
         kernelConstants = [ "-DIMG_WIDTH="+str(self.width), "-DIMG_HEIGHT="+str(self.height),
@@ -137,8 +138,8 @@ class KernelTester:
         #perWarpKernel = SourceModule(kernelSourceGeneral+kernelSourcePerWarp+kernelSourceMain, options=kernelConstants, no_extern_c=True)
         tensorInterpolationKernel = SourceModule(kernelSourceGeneral+kernelSourceTensorInter+kernelSourceMain, options=kernelConstants, no_extern_c=True)
 
-        self.kernels = [#KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(1), (256,1,1), (int(self.width/(256)), int(self.height)), 0),
-                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)), 5000 )]
+        self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(1), (256,1,1), (int(self.width/(256)), int(self.height)), 1024),
+                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)), 13400 )]
 
                          #KernelParams("Per warp", perWarpKernel, numpy.int32(1), (self.warpSize,8,1), (int(self.width), int(self.height/(8))))]
 
@@ -171,6 +172,7 @@ class KernelTester:
                         resultImage.save(path)
                         bar.next()
                     bar.finish()
+                    print("")
 
 try:
     kt = KernelTester()
