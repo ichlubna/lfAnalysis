@@ -1,4 +1,5 @@
 //(8*8*4*16*2 + 64*8*2 + 8*8*4*8*2)/1000
+//(8*8*4*16*2 + 64*8*2 + 8*8*4*8*2)/1000
 __device__ bool coordsOutside(uint2 coords)
 {
     constexpr unsigned int PX_PER_WARP{8};
@@ -13,6 +14,7 @@ __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIG
     constexpr int OUT_VIEWS_COUNT{WEIGHTS_COLS}; 
     constexpr int MAT_VIEW_COUNT{16};
     constexpr int CHANNELS{4};
+    constexpr int MATS_PER_WARP{1};
 
     int warpID = threadIdx.x/WARP_SIZE;
     uint2 pxCoords{coords.x/CHANNELS, coords.y};
@@ -24,7 +26,8 @@ __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIG
     extern __shared__ half localMemory[];
     MemoryPartitioner memoryPartitioner(localMemory);
     
-    auto pixelMatrix = memoryPartitioner.getMatrix(WARP_COUNT, MAT_PX_COUNT*CHANNELS, MAT_VIEW_COUNT); 
+    auto pixelMatrix = memoryPartitioner.getMatrix(MATS_PER_WARP*WARP_COUNT, MAT_PX_COUNT*CHANNELS, MAT_VIEW_COUNT); 
+    auto resultMatrix = memoryPartitioner.getMatrix(MATS_PER_WARP*WARP_COUNT, MAT_PX_COUNT*CHANNELS, OUT_VIEWS_COUNT);
     auto localWeights = memoryPartitioner.getMatrix(1, WEIGHTS_ROWS, WEIGHTS_COLS);
     loadWeightsSync(weights[0], localWeights.data);  
 
@@ -51,7 +54,6 @@ __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIG
         wmma::mma_sync(matResult, matPixels, matWeights, matResult);
     }
     
-    auto resultMatrix = memoryPartitioner.getMatrix(WARP_COUNT, MAT_PX_COUNT*CHANNELS, OUT_VIEWS_COUNT);
     wmma::store_matrix_sync(resultMatrix.ptr(warpID, 0, 0), matResult, OUT_VIEWS_COUNT, wmma::mem_row_major);
     
     for(int i=0; i<OUT_VIEWS_COUNT; i++) 
