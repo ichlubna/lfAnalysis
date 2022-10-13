@@ -126,7 +126,7 @@ class KernelTester:
         kernelConstants = [ "-DIMG_WIDTH="+str(self.width), "-DIMG_HEIGHT="+str(self.height),
                             "-DGRID_COLS="+str(self.cols), "-DGRID_ROWS="+str(self.rows),
                             "-DWARP_SIZE="+str(self.warpSize), "-DWEIGHTS_COLS="+str(self.renderedViewsCount),
-                            "-DWEIGHTS_ROWS="+str(self.cols*self.rows)]
+                            "-DWEIGHTS_ROWS="+str(self.cols*self.rows), "-DCHANNEL_COUNT="+str(self.depth)]
         scriptPath = os.path.dirname(os.path.realpath(__file__))
         kernelSourceMain =  open(scriptPath+"/cudaKernels/mainInterpolation.cu", "r").read()
         kernelSourceGeneral = open(scriptPath+"/cudaKernels/generalInterpolation.cu", "r").read()
@@ -138,8 +138,8 @@ class KernelTester:
         #perWarpKernel = SourceModule(kernelSourceGeneral+kernelSourcePerWarp+kernelSourceMain, options=kernelConstants, no_extern_c=True)
         tensorInterpolationKernel = SourceModule(kernelSourceGeneral+kernelSourceTensorInter+kernelSourceMain, options=kernelConstants, no_extern_c=True)
 
-        self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(1), (256,1,1), (int(self.width/(256)), int(self.height)), 1024),
-                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)), 13400 )]
+        self.kernels = [#KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(1), (256,1,1), (int(round(self.width/(256))), int(self.height)), 1024),]
+                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)), (8*8*4*(16)*2 + 64*8*2 + 8*8*4*8*2) )]
 
                          #KernelParams("Per warp", perWarpKernel, numpy.int32(1), (self.warpSize,8,1), (int(self.width), int(self.height/(8))))]
 

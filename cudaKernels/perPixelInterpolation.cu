@@ -20,7 +20,7 @@ __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIG
             int gridID = getLinearID({y,x}, GRID_COLS);
             auto pixel = images.getPixelAsArray<float>(gridID, focusedCoords);
             for(int i=0; i<WEIGHTS_COLS; i++)
-                sum[i].addWeighted(localWeights(0, gridID, i), pixel);
+                sum[i].addWeighted(localWeights.ref(0, gridID, i), pixel);
         }
     for(int i=0; i<WEIGHTS_COLS; i++)
         images.setPixel(i, coords, sum[i].getUchar4());

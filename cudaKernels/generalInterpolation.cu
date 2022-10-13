@@ -48,19 +48,28 @@ class Images
             public:
             __device__ PixelArray(){};
             __device__ PixelArray(uchar4 pixel) : channels{T(pixel.x), T(pixel.y), T(pixel.z), T(pixel.w)}{};
-            static constexpr int CHANNELS_COUNT{4};
-            T channels[CHANNELS_COUNT]{0,0,0,0};
+            T channels[CHANNEL_COUNT]{0,0,0,0};
             __device__ T& operator[](int index){return channels[index];}
-            __device__ uchar4 getUchar4() {return {(unsigned char)channels[0], (unsigned char)channels[1], (unsigned char)channels[2], (unsigned char)channels[3]};}
+          
+             __device__ uchar4 getUchar4() 
+            {
+                uchar4 result;
+                auto data = reinterpret_cast<unsigned char*>(&result);
+                for(int i=0; i<CHANNEL_COUNT; i++)
+                    data[i] = (unsigned char)round((float)channels[i]);
+                return result;
+            }
+           
             __device__ void addWeighted(T weight, PixelArray<T> value) 
             {    
-                for(int j=0; j<CHANNELS_COUNT; j++)
+                for(int j=0; j<CHANNEL_COUNT; j++)
                     //sum[j] += fPixel[j]*weight;
                     channels[j] = __fmaf_rn(value[j], weight, channels[j]);
             }
+            
             __device__ PixelArray<T> operator/= (const T &divisor)
             {
-                for(int j=0; j<CHANNELS_COUNT; j++)
+                for(int j=0; j<CHANNEL_COUNT; j++)
                     this->channels[j] /= divisor;
                 return *this;
             }
@@ -74,6 +83,11 @@ class Images
             return array;
         }
 
+        __device__ void setChannel(int imageID, uint2 coords, int channelID, unsigned char value)
+        {
+            reinterpret_cast<unsigned char*>(outData[imageID])[coords.y*IMG_WIDTH*CHANNEL_COUNT + coords.x] = value;
+        }
+
         __device__ void setPixel(int imageID, uint2 coords, uchar4 pixel)
         {
             unsigned int linearCoord = getLinearID(coords, IMG_WIDTH);
@@ -84,9 +98,12 @@ class Images
 
 __device__ static void loadWeightsSync(half *inData, half *data)
 {
-    int *intLocal = reinterpret_cast<int*>(data);
-    int *intIn = reinterpret_cast<int*>(inData);
-    intLocal[threadIdx.x] = intIn[threadIdx.x]; 
+    if(threadIdx.x < WEIGHTS_COLS*WEIGHTS_ROWS/4)
+    {
+        int *intLocal = reinterpret_cast<int*>(data);
+        int *intIn = reinterpret_cast<int*>(inData);
+        intLocal[threadIdx.x] = intIn[threadIdx.x]; 
+    }
     __syncthreads();
 }
 
@@ -94,16 +111,33 @@ class Matrix
 {
     public:
     __device__ Matrix(half* inData, int inCount, int inRows, int inCols) : data{inData}, rows{inRows}, cols{inCols}, count{inCount}, matrixSize{inRows*inCols}{}; 
-    __device__ half& operator () (int id, int row, int col)
-    {
-        return data[linearID(id,row,col)];
-    }
-
     __device__ half* ptr(int id, int row, int col)
     {
         return data+linearID(id,row,col);
     }
     
+    template <typename T>
+    __device__ T* ptr(int id, int row, int col) 
+    {
+        return reinterpret_cast<T*>(ptr(id, row, col));
+    }  
+
+    __device__ half& ref(int id, int row, int col)
+    {
+        return *ptr(id, row, col);
+    }
+    
+    template <typename T>
+    __device__ T& ref(int id, int row, int col)
+    {
+        return *ptr<T>(id, row, col);
+    }
+
+    __device__ int stride() 
+    {
+        return cols;
+    }
+ 
     half *data;
 
     private:
