@@ -130,18 +130,15 @@ class KernelTester:
         scriptPath = os.path.dirname(os.path.realpath(__file__))
         kernelSourceMain =  open(scriptPath+"/cudaKernels/mainInterpolation.cu", "r").read()
         kernelSourceGeneral = open(scriptPath+"/cudaKernels/generalInterpolation.cu", "r").read()
-        kernelSourcePerWarp = open(scriptPath+"/cudaKernels/perWarpInterpolation.cu", "r").read()
         kernelSourcePerPixel = open(scriptPath+"/cudaKernels/perPixelInterpolation.cu", "r").read()
         kernelSourceTensorInter = open(scriptPath+"/cudaKernels/tensorInterpolation.cu", "r").read()
 
         perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel+kernelSourceMain, options=kernelConstants, no_extern_c=True)
-        #perWarpKernel = SourceModule(kernelSourceGeneral+kernelSourcePerWarp+kernelSourceMain, options=kernelConstants, no_extern_c=True)
         tensorInterpolationKernel = SourceModule(kernelSourceGeneral+kernelSourceTensorInter+kernelSourceMain, options=kernelConstants, no_extern_c=True)
 
-        self.kernels = [#KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(1), (256,1,1), (int(round(self.width/(256))), int(self.height)), 1024),]
-                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)), (8*8*4*(16)*2 + 64*8*2 + 8*8*4*8*2) )]
+        self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(1), (256,1,1), (int(round(self.width/(256))), int(self.height)), 1024),
+                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)), 8*8*4*(16)*2 + 64*8*2 + 8*8*4*8*2) ]
 
-                         #KernelParams("Per warp", perWarpKernel, numpy.int32(1), (self.warpSize,8,1), (int(self.width), int(self.height/(8))))]
 
     def runKernels(self):
         #result = numpy.zeros((self.height, self.width, self.depth), numpy.uint8)

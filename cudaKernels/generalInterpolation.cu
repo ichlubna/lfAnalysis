@@ -35,9 +35,14 @@ class Images
         int height = 0;
         __device__ Images(int w, int h) : width{w}, height{h}{};
 
+        __device__ uint2 clamp(int2 coords)
+        {
+            return {(unsigned int)max(min(coords.x, IMG_WIDTH),0), (unsigned int)max(min(coords.y, IMG_HEIGHT),0)};
+        } 
+
         __device__ uchar4 getPixel(int imageID, int2 coords)
         {
-            uint2 clamped{(unsigned int)max(min(coords.x, IMG_WIDTH),0), (unsigned int)max(min(coords.y, IMG_HEIGHT),0)};
+            uint2 clamped{clamp(coords)};
             unsigned int linearCoord = getLinearID(clamped, IMG_WIDTH);
             return inData[imageID][linearCoord];
         }
@@ -82,10 +87,10 @@ class Images
             PixelArray<T> array{pixel};
             return array;
         }
-
+            
         __device__ void setChannel(int imageID, uint2 coords, int channelID, unsigned char value)
         {
-            reinterpret_cast<unsigned char*>(outData[imageID])[coords.y*IMG_WIDTH*CHANNEL_COUNT + coords.x] = value;
+            reinterpret_cast<unsigned char*>(outData[imageID])[(coords.y*IMG_WIDTH + coords.x)*CHANNEL_COUNT+channelID] = value;
         }
 
         __device__ void setPixel(int imageID, uint2 coords, uchar4 pixel)
@@ -98,7 +103,7 @@ class Images
 
 __device__ static void loadWeightsSync(half *inData, half *data)
 {
-    if(threadIdx.x < WEIGHTS_COLS*WEIGHTS_ROWS/4)
+    if(threadIdx.x < WEIGHTS_COLS*WEIGHTS_ROWS/2)
     {
         int *intLocal = reinterpret_cast<int*>(data);
         int *intIn = reinterpret_cast<int*>(inData);

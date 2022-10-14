@@ -1,4 +1,3 @@
-//(8*8*4*16*2 + 64*8*2 + 8*8*4*8*2)/1000
 __device__ bool coordsOutside(uint2 coords)
 {
     constexpr unsigned int PX_PER_WARP{8};
@@ -58,5 +57,5 @@ __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIG
     wmma::store_matrix_sync(resultMatrix.ptr(warpID, 0, 0), matResult, OUT_VIEWS_COUNT, wmma::mem_row_major);
   
     for(int i=0; i<OUT_VIEWS_COUNT; i++) 
-        images.setChannel(i, coords, channelID, round((float)resultMatrix.ref(warpID, matrixRowID, i)));
+        images.setChannel(i, pxCoords, channelID, round((float)resultMatrix.ref(warpID, matrixRowID, i)));
 }
