@@ -1,10 +1,10 @@
-__device__ bool coordsOutside(uint2 coords)
+__device__ bool coordsOutside(int2 coords)
 {
     if(coords.x >= IMG_WIDTH || coords.y >= IMG_HEIGHT)
         return false;
 }
 
-__device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIGHTS_COLS], uint2 coords, int focus)
+__device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2 coords, int focus)
 {
     extern __shared__ half localMemory[];
     MemoryPartitioner memoryPartitioner(localMemory);
@@ -13,10 +13,10 @@ __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIG
 
     Images::PixelArray<float> sum[WEIGHTS_COLS];
     float2 gridCenter{(GRID_COLS-1)/2.f, (GRID_ROWS-1)/2.f};
-    for(unsigned int y = 0; y<GRID_ROWS; y++)
-        for(unsigned int x = 0; x<GRID_COLS; x++)
+    for(int y = 0; y<GRID_ROWS; y++)
+        for(int x = 0; x<GRID_COLS; x++)
         {
-            int2 focusedCoords = focusCoords(coords, 10, {x,y}, gridCenter);
+            int2 focusedCoords = focusCoords(coords, focus, {x,y}, gridCenter);
             int gridID = getLinearID({y,x}, GRID_COLS);
             auto pixel = images.getPixelAsArray<float>(gridID, focusedCoords);
             for(int i=0; i<WEIGHTS_COLS; i++)

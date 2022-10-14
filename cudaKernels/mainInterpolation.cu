@@ -7,7 +7,7 @@ __global__ void process(uchar4 inputImages[GRID_COLS*GRID_ROWS][IMG_WIDTH*IMG_HE
     for(int i=0; i<WEIGHTS_COLS; i++)
         images.outData[i] = result[i];
 
-    uint2 coords = getImgCoords();
+    int2 coords = getImgCoords();
     if(coordsOutside(coords))
         return;
 

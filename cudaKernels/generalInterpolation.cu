@@ -2,25 +2,20 @@
 using namespace nvcuda;
 
 typedef struct {float r,g,b;} Pixel;
-__device__ uint2 getImgCoords()
+__device__ int2 getImgCoords()
 {
-    uint2 coords;
+    int2 coords;
     coords.x = (threadIdx.x + blockIdx.x * blockDim.x);
     coords.y = (threadIdx.y + blockIdx.y * blockDim.y);
     return coords;
 }
 
-__device__ unsigned int getLinearID(uint2 coords, int width)
+__device__ int getLinearID(int2 coords, int width)
 {
     return width*coords.y + coords.x;
 }
 
-__device__ float squaredDistance(float2 a, float2 b)
-{
-    return powf(a.x-b.x,2) + powf(a.y-b.y,2);
-}
-
-__device__ int2 focusCoords(uint2 coords, int focus, uint2 position, float2 center)
+__device__ int2 focusCoords(int2 coords, int focus, int2 position, float2 center)
 {
     float2 offset{center.x-position.x, center.y-position.y};
     return {__float2int_rn(focus*offset.x+coords.x), __float2int_rn(offset.y*focus+coords.y)};
@@ -35,15 +30,15 @@ class Images
         int height = 0;
         __device__ Images(int w, int h) : width{w}, height{h}{};
 
-        __device__ uint2 clamp(int2 coords)
+        __device__ int2 clamp(int2 coords)
         {
-            return {(unsigned int)max(min(coords.x, IMG_WIDTH),0), (unsigned int)max(min(coords.y, IMG_HEIGHT),0)};
+            return {max(min(coords.x, IMG_WIDTH),0), max(min(coords.y, IMG_HEIGHT),0)};
         } 
 
         __device__ uchar4 getPixel(int imageID, int2 coords)
         {
-            uint2 clamped{clamp(coords)};
-            unsigned int linearCoord = getLinearID(clamped, IMG_WIDTH);
+            int2 clamped{clamp(coords)};
+            int linearCoord = getLinearID(clamped, IMG_WIDTH);
             return inData[imageID][linearCoord];
         }
  
@@ -61,7 +56,7 @@ class Images
                 uchar4 result;
                 auto data = reinterpret_cast<unsigned char*>(&result);
                 for(int i=0; i<CHANNEL_COUNT; i++)
-                    data[i] = (unsigned char)round((float)channels[i]);
+                    data[i] = __half2int_rn(channels[i]);
                 return result;
             }
            
@@ -88,14 +83,14 @@ class Images
             return array;
         }
             
-        __device__ void setChannel(int imageID, uint2 coords, int channelID, unsigned char value)
+        __device__ void setChannel(int imageID, int2 coords, int channelID, unsigned char value)
         {
             reinterpret_cast<unsigned char*>(outData[imageID])[(coords.y*IMG_WIDTH + coords.x)*CHANNEL_COUNT+channelID] = value;
         }
 
-        __device__ void setPixel(int imageID, uint2 coords, uchar4 pixel)
+        __device__ void setPixel(int imageID, int2 coords, uchar4 pixel)
         {
-            unsigned int linearCoord = getLinearID(coords, IMG_WIDTH);
+            int linearCoord = getLinearID(coords, IMG_WIDTH);
             outData[imageID][linearCoord] = pixel;
         }
 

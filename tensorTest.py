@@ -6,7 +6,6 @@ import pycuda.autoinit
 from pycuda.compiler import SourceModule
 from progress.bar import ChargingBar
 import numpy
-import cv2
 import sys
 import os
 import traceback
@@ -31,6 +30,7 @@ class KernelParams:
 
 class KernelTester:
     renderedViewsCount = 8
+    focus = 10
     imageCount = 64
     numberOfMeasurements = 10
     width = 0
@@ -136,39 +136,43 @@ class KernelTester:
         perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel+kernelSourceMain, options=kernelConstants, no_extern_c=True)
         tensorInterpolationKernel = SourceModule(kernelSourceGeneral+kernelSourceTensorInter+kernelSourceMain, options=kernelConstants, no_extern_c=True)
 
-        self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(1), (256,1,1), (int(round(self.width/(256))), int(self.height)), 1024),
-                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(1), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)), 8*8*4*(16)*2 + 64*8*2 + 8*8*4*8*2) ]
+        self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(self.focus), (256,1,1), (int(round(self.width/(256))), int(self.height)), 1024),
+                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(self.focus), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)), 8*8*4*(16)*2 + 64*8*2 + 8*8*4*8*2) ]
 
+    def runAndMeasureKernel(self, kernel):
+        start=cuda.Event()
+        end=cuda.Event()
+        start.record()
+        func = kernel.module.get_function("process")
+        func(self.imagesGPU, self.resultGPU, self.weightMatrixGPU, kernel.parameter, block=kernel.blockSize, grid=kernel.blockCount, shared=kernel.sharedSize)
+        end.record()
+        end.synchronize()
+        return start.time_till(end)
+
+    def downloadAndSaveResult(self, kernel):
+        result = numpy.zeros((self.size*self.renderedViewsCount, 1, 1), numpy.uint8)
+        bar = ChargingBar("Downloading data and storing", max=self.renderedViewsCount+2)
+        cuda.memcpy_dtoh(result, self.resultGPU)
+        bar.next()
+        result = result.astype(numpy.uint8)
+        resultParts = numpy.split(result, self.renderedViewsCount)
+        bar.next()
+        for j in range(0, self.renderedViewsCount):
+            resultImage = Image.frombytes("RGBA", (self.width, self.height), resultParts[j])
+            path = "./"+kernel.outDir+str(j)+".png"
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            resultImage.save(path)
+            bar.next()
+        bar.finish()
 
     def runKernels(self):
-        #result = numpy.zeros((self.height, self.width, self.depth), numpy.uint8)
-        result = numpy.zeros((self.size*self.renderedViewsCount, 1, 1), numpy.uint8)
         for kernel in self.kernels:
-            print(kernel.name)
+            print(kernel.name + " times [ms]:")
             for i in range(0,self.numberOfMeasurements):
-                start=cuda.Event()
-                end=cuda.Event()
-                start.record()
-                func = kernel.module.get_function("process")
-                func(self.imagesGPU, self.resultGPU, self.weightMatrixGPU, kernel.parameter, block=kernel.blockSize, grid=kernel.blockCount, shared=kernel.sharedSize)
-                end.record()
-                end.synchronize()
-                print("Time: "+str(start.time_till(end))+" ms")
-
+                time = self.runAndMeasureKernel(kernel)
+                print(str(time))
                 if i == self.numberOfMeasurements-1:
-                    bar = ChargingBar("Downloading data and storing", max=self.renderedViewsCount+2)
-                    cuda.memcpy_dtoh(result, self.resultGPU)
-                    bar.next()
-                    result = result.astype(numpy.uint8)
-                    resultParts = numpy.split(result, self.renderedViewsCount)
-                    bar.next()
-                    for j in range(0, self.renderedViewsCount):
-                        resultImage = Image.frombytes("RGBA", (self.width, self.height), resultParts[j])
-                        path = "./"+kernel.outDir+str(j)+".png"
-                        os.makedirs(os.path.dirname(path), exist_ok=True)
-                        resultImage.save(path)
-                        bar.next()
-                    bar.finish()
+                    self.downloadAndSaveResult(kernel)
                     print("")
 
 try:
