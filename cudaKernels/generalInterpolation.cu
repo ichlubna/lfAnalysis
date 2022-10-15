@@ -96,9 +96,10 @@ class Images
 
 };
 
-__device__ static void loadWeightsSync(half *inData, half *data)
+template <typename T>
+__device__ static void loadWeightsSync(T *inData, T *data, int size)
 {
-    if(threadIdx.x < WEIGHTS_COLS*WEIGHTS_ROWS/2)
+    if(threadIdx.x < size)
     {
         int *intLocal = reinterpret_cast<int*>(data);
         int *intIn = reinterpret_cast<int*>(inData);
@@ -107,11 +108,12 @@ __device__ static void loadWeightsSync(half *inData, half *data)
     __syncthreads();
 }
 
+template <typename TT>
 class Matrix
 {
     public:
-    __device__ Matrix(half* inData, int inCount, int inRows, int inCols) : data{inData}, rows{inRows}, cols{inCols}, count{inCount}, matrixSize{inRows*inCols}{}; 
-    __device__ half* ptr(int id, int row, int col)
+    __device__ Matrix(TT* inData, int inCount, int inRows, int inCols) : data{inData}, rows{inRows}, cols{inCols}, count{inCount}, matrixSize{inRows*inCols}{}; 
+    __device__ TT* ptr(int id, int row, int col)
     {
         return data+linearID(id,row,col);
     }
@@ -122,7 +124,7 @@ class Matrix
         return reinterpret_cast<T*>(ptr(id, row, col));
     }  
 
-    __device__ half& ref(int id, int row, int col)
+    __device__ TT& ref(int id, int row, int col)
     {
         return *ptr(id, row, col);
     }
@@ -151,23 +153,24 @@ class Matrix
     }
 };
 
+template <typename TT>
 class MemoryPartitioner
 {
     public:
-    __device__ MemoryPartitioner(half *inMemory)
+    __device__ MemoryPartitioner(TT *inMemory)
     {
         memory = inMemory; 
     }
 
-    __device__ Matrix getMatrix(int count, int rows, int cols)
+    __device__ Matrix<TT> getMatrix(int count, int rows, int cols)
     {
         int size = rows*cols*count;
-        half *arr = &(memory[consumed]);
+        TT *arr = &(memory[consumed]);
         consumed += size;
         return {arr, count, rows, cols};
     }
     private:
-    half *memory;
+    TT *memory;
     unsigned int consumed{0};
 };
 

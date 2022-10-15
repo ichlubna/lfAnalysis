@@ -7,9 +7,9 @@ __device__ bool coordsOutside(int2 coords)
 __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2 coords, int focus)
 {
     extern __shared__ half localMemory[];
-    MemoryPartitioner memoryPartitioner(localMemory);
+    MemoryPartitioner<half> memoryPartitioner(localMemory);
     auto localWeights = memoryPartitioner.getMatrix(1, WEIGHTS_ROWS, WEIGHTS_COLS);
-    loadWeightsSync(weights[0], localWeights.data); 
+    loadWeightsSync<half>(weights[0], localWeights.data, WEIGHTS_COLS*WEIGHTS_ROWS/2); 
 
     Images::PixelArray<float> sum[WEIGHTS_COLS];
     float2 gridCenter{(GRID_COLS-1)/2.f, (GRID_ROWS-1)/2.f};

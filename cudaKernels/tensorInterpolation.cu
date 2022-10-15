@@ -19,12 +19,12 @@ __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIG
     float2 gridCenter{(GRID_COLS-1)/2.f, (GRID_ROWS-1)/2.f};
 
     extern __shared__ half localMemory[];
-    MemoryPartitioner memoryPartitioner(localMemory);
+    MemoryPartitioner<half> memoryPartitioner(localMemory);
    
     auto pixelMatrix = memoryPartitioner.getMatrix(WARP_COUNT, MAT_PX_COUNT*CHANNEL_COUNT, MAT_VIEW_COUNT); 
     auto resultMatrix = memoryPartitioner.getMatrix(WARP_COUNT, MAT_PX_COUNT*CHANNEL_COUNT, OUT_VIEWS_COUNT);
     auto localWeights = memoryPartitioner.getMatrix(1, WEIGHTS_ROWS, WEIGHTS_COLS);
-    loadWeightsSync(weights[0], localWeights.data);  
+    loadWeightsSync<half>(weights[0], localWeights.data, WEIGHTS_COLS*WEIGHTS_ROWS/2);  
 
     wmma::fragment<wmma::accumulator, 32, 8, 16, half> matResult;
     wmma::fill_fragment(matResult, 0.0f);
