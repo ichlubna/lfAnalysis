@@ -4,24 +4,41 @@ __device__ bool coordsOutside(int2 coords)
         return false;
 }
 
-__device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2 coords, int focus)
+__device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2 coords, const int2 * __restrict__  image_starts, unsigned int *atomic_counter)
 {
     extern __shared__ half localMemory[];
-    MemoryPartitioner<half> memoryPartitioner(localMemory);
+    MemoryPartitioner memoryPartitioner(localMemory);
     auto localWeights = memoryPartitioner.getMatrix(1, WEIGHTS_ROWS, WEIGHTS_COLS);
-    loadWeightsSync<half>(weights[0], localWeights.data, WEIGHTS_COLS*WEIGHTS_ROWS/2); 
+    loadWeightsSync<half>(weights[0], localWeights.data, WEIGHTS_COLS*WEIGHTS_ROWS/2);  
 
-    Images::PixelArray<float> sum[WEIGHTS_COLS];
-    float2 gridCenter{(GRID_COLS-1)/2.f, (GRID_ROWS-1)/2.f};
-    for(int y = 0; y<GRID_ROWS; y++)
-        for(int x = 0; x<GRID_COLS; x++)
+    Images::PixelArray<float> sum[OUT_VIEWS_COUNT];
+    unsigned int mat_size = IMG_WIDTH*IMG_HEIGHT;
+    uchar4 *in_char4_ptr = images.inData[0];
+    uchar4 *out_char4_ptr = images.outData[0];
+    for(int row_offset = 0; row_offset < ROWS_PER_THREAD; row_offset++)
+    {
+        int coord = coords.x + (coords.y + row_offset) * IMG_WIDTH;
+        for(int gridID = 0; gridID<GRID_ROWS*GRID_COLS; gridID++)
         {
-            int2 focusedCoords = focusCoords(coords, focus, {x,y}, gridCenter);
-            int gridID = getLinearID({y,x}, GRID_COLS);
-            auto pixel = images.getPixelAsArray<float>(gridID, focusedCoords);
-            for(int i=0; i<WEIGHTS_COLS; i++)
-                sum[i].addWeighted(localWeights.ref(0, gridID, i), pixel);
+            //int2 focusedCoords{coords.x + image_starts[gridID].x,coords.y + image_starts[gridID].y};
+            //auto pixel = images.getPixelAsArray<float>(gridID, focusedCoords);
+            Images::PixelArray<float> pixel(in_char4_ptr[coord + gridID * mat_size]);
+            for(int i=0; i<OUT_VIEWS_COUNT; i++)
+            {
+                #ifdef WEIGHTS_COL_MAJOR
+                    int x = gridID%16;
+                    int y = i + (OUT_VIEWS_COUNT*(gridID/16));
+                #else
+                    int x = i;
+                    int y = gridID;
+                #endif
+                sum[i].addWeighted(localWeights.ref(0, y, x), pixel);
+            }
         }
-    for(int i=0; i<WEIGHTS_COLS; i++)
-        images.setPixel(i, coords, sum[i].getUchar4());
+        for(int i=0; i<OUT_VIEWS_COUNT; i++)
+        {
+            out_char4_ptr[coord + i * mat_size] = sum[i].getUchar4();
+            sum[i] = Images::PixelArray<float>();
+        }
+    }
 }

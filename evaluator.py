@@ -21,8 +21,8 @@ class Evaluator:
     internalNumberingWidth = 4
 
     def prepareDirs(self, originalDir, distortedDir):
-        tmpOriginal = self.tmpDir+"/original"
-        tmpDistorted = self.tmpDir+"/distorted"
+        tmpOriginal = os.path.join(self.tmpDir,"original")
+        tmpDistorted = os.path.join(self.tmpDir,"distorted")
         os.mkdir(tmpOriginal)
         os.mkdir(tmpDistorted)
         originalFiles = sorted(os.listdir(originalDir))
@@ -32,15 +32,15 @@ class Evaluator:
         if len(originalFiles) != len(distortedFiles):
             raise Exception("The input folders do not contain the same number of images!")
         for i in range(0,len(originalFiles)):
-           shutil.copyfile(originalDir+"/"+originalFiles[i], tmpOriginal+"/"+str(i).zfill(self.internalNumberingWidth)+originalExtension)
-           shutil.copyfile(distortedDir+"/"+distortedFiles[i], tmpDistorted+"/"+str(i).zfill(self.internalNumberingWidth)+distortedExtension)
+           shutil.copyfile(os.path.join(originalDir,originalFiles[i]), os.path.join(tmpOriginal,str(i).zfill(self.internalNumberingWidth)+originalExtension))
+           shutil.copyfile(os.path.join(distortedDir,distortedFiles[i]), os.path.join(tmpDistorted,str(i).zfill(self.internalNumberingWidth)+distortedExtension))
         return tmpOriginal, tmpDistorted, originalExtension, distortedExtension
 
     def metrics(self, inputOriginalDir, inputDistortedDir):
         m = Metrics()
         originalDir, distortedDir, originalExtension, distortedExtension = self.prepareDirs(inputOriginalDir, inputDistortedDir)
 
-        commandStart = self.ffmpegPath+" -i "+originalDir+"/%0"+str(self.internalNumberingWidth)+"d"+originalExtension+" -i "+distortedDir+"/%0"+str(self.internalNumberingWidth)+"d"+distortedExtension
+        commandStart = self.ffmpegPath+" -i "+os.path.join(originalDir,"%0"+str(self.internalNumberingWidth)+"d"+originalExtension)+" -i "+os.path.join(distortedDir,"%0"+str(self.internalNumberingWidth)+"d"+distortedExtension)
         commandEnd = "-f null -"
 
         result = basher.run(commandStart+" -lavfi ssim "+commandEnd)

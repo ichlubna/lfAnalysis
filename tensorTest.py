@@ -45,6 +45,12 @@ class KernelTester:
     imagesGPU = None
     resultGPU = None
     weightMatrixGPU = None
+    rows_per_group = 16
+    matrix_load_once = True
+    weights_cols_major = True
+    atomic_counter = 0
+    persistent_threads = True
+    
     kernels = []
 
     def loadInput(self):
@@ -92,13 +98,24 @@ class KernelTester:
         for coords in trajectory:
             weights = self.computeWeights(coords)
             weightVectors.append(weights)
-        weightMatrix= numpy.c_[ weightVectors ].T
+        if self.weights_cols_major:
+            weightsVectorsTransformed = []
+            for block in range(int(self.rows * self.cols/16)):
+                for weight in weightVectors:
+                    weightsVectorsTransformed.append(weight[16*block:16*(block+1)])
+            weightMatrix=numpy.c_[ weightsVectorsTransformed ]
+            #weightMatrix2= numpy.c_[ weightVectors ].T
+        else:
+            weightMatrix= numpy.c_[ weightVectors ].T
         return weightMatrix
 
     def allocWeightMatrices(self):
         weightMatrix = self.createTrajectoryWeightMatrix((0,0), (self.cols, self.rows))
         byteWeights = weightMatrix.tobytes()
         self.weightMatrixGPU = cuda.mem_alloc(weightMatrix.size*2)
+        self.zeroAtomicCounterGPU = cuda.mem_alloc(4)
+        self.atomicCounterGPU = cuda.mem_alloc(4)
+        cuda.memcpy_htod(self.zeroAtomicCounterGPU, numpy.array([0],dtype=numpy.uint32))
         cuda.memcpy_htod(self.weightMatrixGPU, byteWeights)
 
     def allocGPUResources(self):
@@ -115,6 +132,7 @@ class KernelTester:
                 bar.next()
         bar.finish()
 
+        self.imageStartsGPU = cuda.mem_alloc(int(self.renderedViewsCount)*8)
         self.imagesGPU = cuda.mem_alloc(int(self.totalSize))
         cuda.memcpy_htod(self.imagesGPU, images)
         self.resultGPU = cuda.mem_alloc(self.size*self.renderedViewsCount)
@@ -125,8 +143,19 @@ class KernelTester:
     def compileKernels(self):
         kernelConstants = [ "-DIMG_WIDTH="+str(self.width), "-DIMG_HEIGHT="+str(self.height),
                             "-DGRID_COLS="+str(self.cols), "-DGRID_ROWS="+str(self.rows),
-                            "-DWARP_SIZE="+str(self.warpSize), "-DWEIGHTS_COLS="+str(self.renderedViewsCount),
-                            "-DWEIGHTS_ROWS="+str(self.cols*self.rows), "-DCHANNEL_COUNT="+str(self.depth)]
+                            "-DWARP_SIZE="+str(self.warpSize), "-DCHANNEL_COUNT="+str(self.depth),
+                            "-DROWS_PER_THREAD="+str(self.rows_per_group), "-DOUT_VIEWS_COUNT="+str(self.renderedViewsCount)]
+        if self.weights_cols_major:
+            kernelConstants += ["-DWEIGHTS_COLS="+str(16),"-DWEIGHTS_ROWS="+str(int(self.cols*self.rows*self.renderedViewsCount/16))]
+        else:
+            kernelConstants += ["-DWEIGHTS_COLS="+str(self.renderedViewsCount),"-DWEIGHTS_ROWS="+str(self.cols*self.rows)]
+        if self.matrix_load_once:
+            kernelConstants.append("-DMATRIX_LOAD_ONCE")
+        if self.weights_cols_major:
+            kernelConstants.append("-DWEIGHTS_COL_MAJOR")
+        if self.persistent_threads:
+            kernelConstants.append("-DPERSISTENT_THREADS")
+
         scriptPath = os.path.dirname(os.path.realpath(__file__))
         kernelSourceMain =  open(scriptPath+"/cudaKernels/mainInterpolation.cu", "r").read()
         kernelSourceGeneral = open(scriptPath+"/cudaKernels/generalInterpolation.cu", "r").read()
@@ -135,16 +164,19 @@ class KernelTester:
 
         perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel+kernelSourceMain, options=kernelConstants, no_extern_c=True)
         tensorInterpolationKernel = SourceModule(kernelSourceGeneral+kernelSourceTensorInter+kernelSourceMain, options=kernelConstants, no_extern_c=True)
-
-        self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(self.focus), (256,1,1), (int(round(self.width/(256))), int(self.height)), 1024),
-                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(self.focus), (self.warpSize*8,1,1), (int(self.width/64), int(self.height)), 8*8*4*(16)*2 + 64*8*2 + 8*8*4*8*2) ]
+        self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(self.focus), (256,1,1), (int(round(self.width/(256))), int(self.height/self.rows_per_group)), 1024),
+                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(self.focus), (self.warpSize*8,1,1), (int(self.width/64), int(self.height/self.rows_per_group)), 8*8*4*(16)*2 + 64*8*2 + 8*8*4*8*2) ]
 
     def runAndMeasureKernel(self, kernel):
+        if self.persistent_threads:
+            cuda.memcpy_dtod(self.atomicCounterGPU, self.zeroAtomicCounterGPU,4)
         start=cuda.Event()
         end=cuda.Event()
         start.record()
+        func = kernel.module.get_function("precalc_image_starts")
+        func(self.imageStartsGPU, kernel.parameter, block=(int(self.cols * self.rows),1,1), grid=(1,1,1))
         func = kernel.module.get_function("process")
-        func(self.imagesGPU, self.resultGPU, self.weightMatrixGPU, kernel.parameter, block=kernel.blockSize, grid=kernel.blockCount, shared=kernel.sharedSize)
+        func(self.imagesGPU, self.resultGPU, self.weightMatrixGPU, self.imageStartsGPU, self.atomicCounterGPU, block=kernel.blockSize, grid=kernel.blockCount, shared=kernel.sharedSize)
         end.record()
         end.synchronize()
         return start.time_till(end)

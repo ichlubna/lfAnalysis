@@ -1,4 +1,8 @@
 #include <mma.h>
+#ifndef ROWS_PER_THREAD
+    #define ROWS_PER_THREAD 1
+#endif
+
 using namespace nvcuda;
 
 typedef struct {float r,g,b;} Pixel;
@@ -6,7 +10,7 @@ __device__ int2 getImgCoords()
 {
     int2 coords;
     coords.x = (threadIdx.x + blockIdx.x * blockDim.x);
-    coords.y = (threadIdx.y + blockIdx.y * blockDim.y);
+    coords.y = ((threadIdx.y + blockIdx.y * blockDim.y) * ROWS_PER_THREAD);
     return coords;
 }
 
@@ -19,6 +23,12 @@ __device__ int2 focusCoords(int2 coords, int focus, int2 position, float2 center
 {
     float2 offset{center.x-position.x, center.y-position.y};
     return {__float2int_rn(focus*offset.x+coords.x), __float2int_rn(offset.y*focus+coords.y)};
+}
+
+__device__ int2 getImageStartCoords(int focus, int2 position, float2 center)
+{
+    float2 offset{center.x-position.x, center.y-position.y};
+    return {__float2int_rn(focus*offset.x), __float2int_rn(offset.y*focus)};
 }
 
 class Images
