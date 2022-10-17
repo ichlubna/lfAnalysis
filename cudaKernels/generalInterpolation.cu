@@ -5,6 +5,8 @@
 
 using namespace nvcuda;
 
+extern __shared__ half localMemory[];
+
 typedef struct {float r,g,b;} Pixel;
 __device__ int2 getImgCoords()
 {
@@ -34,24 +36,46 @@ __device__ int2 getImageStartCoords(int focus, int2 position, float2 center)
 class Images
 {
     public:
-        uchar4 *inData[GRID_COLS*GRID_ROWS];
-        uchar4 *outData[WEIGHTS_COLS];
-        int width = 0;
-        int height = 0;
-        __device__ Images(int w, int h) : width{w}, height{h}{};
+        static constexpr int IMG_SIZE{IMG_WIDTH*IMG_HEIGHT};
+        uchar4 *inData;
+        uchar4 *outData;
+        __device__ void init(uchar4 *input, uchar4 *output)
+        {
+            inData = input;
+            outData = output;
+        };
 
         __device__ int2 clamp(int2 coords)
         {
             return {max(min(coords.x, IMG_WIDTH),0), max(min(coords.y, IMG_HEIGHT),0)};
+        }
+
+        __device__ int linear(int2 coords)
+        {
+            return coords.y*IMG_WIDTH + coords.x;
         } 
+
+        __device__ int linear(int imageID)
+        {
+            return imageID*IMG_SIZE;
+        }
+
+        __device__ int linear(int2 coords, int imageID)
+        {
+            return linear(imageID) + linear(coords); 
+        }
+
+        __device__ uchar4 getPixel(int linearID)
+        {
+            return inData[linearID];
+        }
 
         __device__ uchar4 getPixel(int imageID, int2 coords)
         {
             int2 clamped{clamp(coords)};
-            int linearCoord = getLinearID(clamped, IMG_WIDTH);
-            return inData[imageID][linearCoord];
+            return inData[linear(clamped, imageID)];
         }
- 
+         
         template <typename T>
         class PixelArray
         {
@@ -92,19 +116,33 @@ class Images
             PixelArray<T> array{pixel};
             return array;
         }
+       
+        template <typename T> 
+        __device__ PixelArray<T> getPixelAsArray(int linearID)
+        {
+            uchar4 pixel = getPixel(linearID);
+            PixelArray<T> array{pixel};
+            return array;
+        }
             
         __device__ void setChannel(int imageID, int2 coords, int channelID, unsigned char value)
         {
-            reinterpret_cast<unsigned char*>(outData[imageID])[(coords.y*IMG_WIDTH + coords.x)*CHANNEL_COUNT+channelID] = value;
+            reinterpret_cast<unsigned char*>(outData)[imageID*IMG_SIZE + (coords.y*IMG_WIDTH + coords.x)*CHANNEL_COUNT+channelID] = value;
         }
 
         __device__ void setPixel(int imageID, int2 coords, uchar4 pixel)
         {
-            int linearCoord = getLinearID(coords, IMG_WIDTH);
-            outData[imageID][linearCoord] = pixel;
+            outData[linear(coords, imageID)] = pixel;
+        }
+        
+        __device__ void setPixel(int linearID, uchar4 pixel)
+        {
+            outData[linearID] = pixel;
         }
 
 };
+__device__ Images images;
+
 
 template <typename T>
 __device__ static void loadWeightsSync(T *inData, T *data, int size)
@@ -118,49 +156,71 @@ __device__ static void loadWeightsSync(T *inData, T *data, int size)
     __syncthreads();
 }
 
+class Indexer
+{
+    public:
+    __device__ int linearIDBase(int id, int size)
+    {
+        return linearCoord = id*size;
+    } 
+    
+    __device__ int linearID(int id, int size)
+    {
+        return linearCoord + id*size;
+    }
+    
+    __device__ int linearCoordsBase(int2 coords, int width)
+    {
+        return linearCoord = coords.y*width + coords.x;
+    }
+
+    __device__ int linearCoords(int2 coords, int width)
+    {
+        return linearCoord + coords.y*width + coords.x;
+    }
+   
+    __device__ int linearCoordsY(int coordY, int width)
+    {
+        return linearCoord + coordY*width;
+    }
+
+    __device__ int getBase()
+    {
+        return linearCoord;
+    }
+
+    private:
+    int linearCoord{0};
+};
+
 template <typename TT>
 class Matrix
 {
     public:
-    __device__ Matrix(TT* inData, int inCount, int inRows, int inCols) : data{inData}, rows{inRows}, cols{inCols}, count{inCount}, matrixSize{inRows*inCols}{}; 
-    __device__ TT* ptr(int id, int row, int col)
+    __device__ Matrix(TT* inData) : data{inData}{}; 
+    __device__ TT* ptr(int index)
     {
-        return data+linearID(id,row,col);
+        return data+index;
     }
     
     template <typename T>
-    __device__ T* ptr(int id, int row, int col) 
+    __device__ T* ptr(int index) 
     {
-        return reinterpret_cast<T*>(ptr(id, row, col));
+        return reinterpret_cast<T*>(ptr(index));
     }  
 
-    __device__ TT& ref(int id, int row, int col)
+    __device__ TT& ref(int index)
     {
-        return *ptr(id, row, col);
+        return *ptr(index);
     }
     
     template <typename T>
-    __device__ T& ref(int id, int row, int col)
+    __device__ T& ref(int index)
     {
-        return *ptr<T>(id, row, col);
-    }
-
-    __device__ int stride() 
-    {
-        return cols;
+        return *ptr<T>(index);
     }
  
     half *data;
-
-    private:
-    int rows;
-    int cols;
-    int count;
-    int matrixSize;
-    __device__ int linearID(int id, int row, int col)
-    {
-        return id*matrixSize + row*cols + col;
-    }
 };
 
 template <typename TT>
@@ -177,10 +237,9 @@ class MemoryPartitioner
         int size = rows*cols*count;
         TT *arr = &(memory[consumed]);
         consumed += size;
-        return {arr, count, rows, cols};
+        return {arr};
     }
     private:
     TT *memory;
     unsigned int consumed{0};
 };
-

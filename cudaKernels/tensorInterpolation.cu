@@ -1,23 +1,71 @@
+namespace Constants
+{
+    constexpr int MAT_PX_COUNT{32};
+    constexpr int WARP_COUNT{8}; 
+    constexpr int MAT_VIEW_COUNT{16};
+}
+
 __device__ bool coordsOutside(int2 coords)
 {
-    constexpr int PX_PER_WARP{8};
-    if(coords.x >= IMG_WIDTH*4 || coords.y >= IMG_HEIGHT)
+    if(coords.x >= IMG_WIDTH || coords.y >= IMG_HEIGHT)
         return false;
 }
 
-__device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2 coords, const int2 * __restrict__  image_starts, unsigned int *atomic_counter)
+class Pixels
 {
+    private:
+    uchar4 data[Constants::MAT_VIEW_COUNT];
+    public:
     
-    constexpr int MAT_PX_COUNT{8};
-    constexpr int WARP_COUNT{8}; 
-    constexpr int MAT_VIEW_COUNT{16};
-    
+    __device__ void loadFromImages(int batchID, int2 coords)
+    {
+        int linear = images.linear(coords);
+        int batchOffset = batchID*Constants::MAT_VIEW_COUNT; 
+        for(int i=0; i<Constants::MAT_VIEW_COUNT; i++)
+        {
+            uchar4 px = images.getPixel(linear + images.linear(batchOffset+i));
+            for(int j=0; j<CHANNEL_COUNT; j++)
+                reinterpret_cast<unsigned char*>(data)[Constants::MAT_VIEW_COUNT*j + i] = reinterpret_cast<unsigned char*>(&px)[j];
+        }
+    }
 
+    template <typename T>
+    __device__ void loadFromMatrix(T *matrix, int channelID)
+    {
+       int offset = channelID*OUT_VIEWS_COUNT/sizeof(T);
+       for(int i=0; i<OUT_VIEWS_COUNT/sizeof(T); i++)
+       {
+            reinterpret_cast<int*>(data)[offset+i] = reinterpret_cast<int*>(matrix)[i];
+       }
+    }
+
+    __device__ uchar4 getViewPixel(int viewID)
+    {
+        uchar4 result;
+        for(int i=0; i<CHANNEL_COUNT; i++)
+            reinterpret_cast<unsigned char*>(&result)[i] =__half2uint_rn(reinterpret_cast<half*>(data)[OUT_VIEWS_COUNT*i+viewID]);
+        return result;
+    }
+
+    __device__ void copyChannelsToMatrix(half *matrix, int channelID)
+    { 
+        int linear = channelID*Constants::MAT_VIEW_COUNT;
+        constexpr int VAL_COUNT{2};
+        auto dataPtr = reinterpret_cast<unsigned char*>(data);
+        for(int i=0; i<Constants::MAT_VIEW_COUNT/VAL_COUNT; i++)
+        {
+            half2 pair{__uint2half_rn(dataPtr[linear]), __uint2half_rn(dataPtr[linear+1])};
+            reinterpret_cast<half2*>(matrix)[i] = pair;
+            linear+=2;
+        } 
+    }
+};
+
+__device__ void interpolateImages(half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2 coords, const int2 * __restrict__  image_starts, unsigned int *atomic_counter)
+{
     int warpID = threadIdx.x/WARP_SIZE;
-    int2 pxCoords{coords.x/CHANNEL_COUNT, coords.y};
-    int channelID = threadIdx.x%CHANNEL_COUNT;
-    int matrixRowID = threadIdx.x%WARP_SIZE;//coords.x%WARP_SIZE;
-
+    int matrixRowID = threadIdx.x%WARP_SIZE;
+/*
     #ifdef PERSISTENT_THREADS
     unsigned int blocks_count = IMG_WIDTH*IMG_HEIGHT*4/WARP_SIZE;
     unsigned int blocks_per_row = IMG_WIDTH*4/WARP_SIZE;
@@ -29,82 +77,96 @@ __device__ void interpolateImages(Images images, half weights[WEIGHTS_ROWS][WEIG
     }
     act_block = __shfl_sync(0xffffffff,act_block,0);
     #endif
-
-    extern __shared__ half localMemory[];
+   */ 
     MemoryPartitioner memoryPartitioner(localMemory);
-   
-    auto pixelMatrix = memoryPartitioner.getMatrix(WARP_COUNT, MAT_PX_COUNT*CHANNEL_COUNT, MAT_VIEW_COUNT); 
-    auto resultMatrix = memoryPartitioner.getMatrix(WARP_COUNT, MAT_PX_COUNT*CHANNEL_COUNT, OUT_VIEWS_COUNT);
+    
+    auto pixelMatrix = memoryPartitioner.getMatrix(Constants::WARP_COUNT, Constants::MAT_PX_COUNT, Constants::MAT_VIEW_COUNT);
+    Indexer ID;
+    ID.linearIDBase(warpID, Constants::MAT_PX_COUNT*Constants::MAT_VIEW_COUNT);
     auto localWeights = memoryPartitioner.getMatrix(1, WEIGHTS_ROWS, WEIGHTS_COLS);
     loadWeightsSync<half>(weights[0], localWeights.data, WEIGHTS_COLS*WEIGHTS_ROWS/2);  
-
+/*
+    #ifdef PERSISTENT_THREADS
     if (act_block >= blocks_count) return;
-
-    wmma::fragment<wmma::accumulator, 32, 8, 16, half> matResult;
-    //wmma::fill_fragment(matResult, 0.0f);
+    #endif
+*/
+    wmma::fragment<wmma::accumulator, 32, 8, 16, half> matResult[CHANNEL_COUNT];
     wmma::fragment<wmma::matrix_a, 32, 8, 16, half, wmma::row_major> matPixels;
-    #ifdef WEIGHTS_COL_MAJOR
+/*   #ifdef WEIGHTS_COL_MAJOR
         // col major layout - matrices 16x8 one after each other in buffer
         #define matrix_b_dir wmma::col_major
         constexpr int stride_y = 8;
     #else
         #define matrix_b_dir wmma::row_major
-        constexpr int stride_y = MAT_VIEW_COUNT;
+        constexpr int stride_y = Constants::MAT_VIEW_COUNT;
     #endif
-    
+  
     #ifdef MATRIX_LOAD_ONCE
-        wmma::fragment<wmma::matrix_b, 32, 8, 16, half, matrix_b_dir> matWeights[(GRID_COLS*GRID_ROWS)/MAT_VIEW_COUNT];
+        wmma::fragment<wmma::matrix_b, 32, 8, 16, half, matrix_b_dir> matWeights[(GRID_COLS*GRID_ROWS)/Constants::MAT_VIEW_COUNT];
     #else
         wmma::fragment<wmma::matrix_b, 32, 8, 16, half, matrix_b_dir> matWeights;
     #endif
-
+ */ 
+    wmma::fragment<wmma::matrix_b, 32, 8, 16, half, wmma::row_major> matWeights;
+    Pixels pixels;
     
-    int batchCount = (GRID_COLS*GRID_ROWS)/MAT_VIEW_COUNT;
-    #ifdef MATRIX_LOAD_ONCE
+    int batchCount = (GRID_COLS*GRID_ROWS)/Constants::MAT_VIEW_COUNT;
+/*    #ifdef MATRIX_LOAD_ONCE
         for(int batchID = 0; batchID < batchCount; batchID++)
         {
-            wmma::load_matrix_sync(matWeights[batchID], localWeights.ptr<half>(0, batchID * stride_y, 0), localWeights.stride());
+            wmma::load_matrix_sync(matWeights[batchID], localWeights.ptr(batchID * stride_y), WEIGHTS_COLS);
         }
-    #endif
-    unsigned char *in_char_ptr = (unsigned char *)(images.inData[0]);
-    unsigned char *out_char_ptr = (unsigned char *)(images.outData[0]);
-    unsigned int mat_size = IMG_WIDTH*IMG_HEIGHT*4;
-    #ifdef PERSISTENT_THREADS
+    #endif*/
+    int originalCoordY = coords.y;
+ /*   #ifdef PERSISTENT_THREADS
     while(act_block < blocks_count){coords.x = (act_block%blocks_per_row) * WARP_SIZE + matrixRowID; coords.y = act_block/blocks_per_row;
-    #else
-    for(int row_offset = 0; row_offset < ROWS_PER_THREAD; row_offset++){
-    #endif
-        int coord = coords.x + (coords.y + row_offset) * IMG_WIDTH * 4;
-
-        wmma::fill_fragment(matResult, 0.0f);
+    #else*/
+    for(int row_offset = 0; row_offset < ROWS_PER_THREAD; row_offset++)
+    {
+    //#endif
+        coords.y = originalCoordY+row_offset;
+        for(int i=0; i<CHANNEL_COUNT; i++)
+            wmma::fill_fragment(matResult[i], 0.0f);
         
-        for(int batchID=0; batchID < batchCount; batchID++)
+        for(int batchID=0; batchID<batchCount; batchID++)
         {
-            #ifndef MATRIX_LOAD_ONCE
-                wmma::load_matrix_sync(matWeights, localWeights.ptr<half>(0, batchID * stride_y, 0), localWeights.stride());
-            #endif
-            for(int viewID=0; viewID<MAT_VIEW_COUNT; viewID+=2)
+            pixels.loadFromImages(batchID, coords);
+/*            #ifndef MATRIX_LOAD_ONCE
+                wmma::load_matrix_sync(matWeights, localWeights.ptr(batchID * stride_y), WEIGHTS_COLS);
+            #endif*/
+            wmma::load_matrix_sync(matWeights, localWeights.ptr(batchID*16*8), WEIGHTS_COLS);
+            for(int channelID=0; channelID<CHANNEL_COUNT; channelID++)
             {
-                int gridID = batchID*MAT_VIEW_COUNT+viewID; 
-                half2 channelPair{(half)in_char_ptr[coord + gridID * mat_size],(half)in_char_ptr[coord + (gridID + 1) * mat_size]};
-                pixelMatrix.ref<half2>(warpID, matrixRowID, viewID) = channelPair;
+                pixels.copyChannelsToMatrix(pixelMatrix.ptr(ID.linearCoordsY(matrixRowID, Constants::MAT_VIEW_COUNT)), channelID); 
+                wmma::load_matrix_sync(matPixels, pixelMatrix.ptr(ID.getBase()), Constants::MAT_VIEW_COUNT);
+/*                #ifdef MATRIX_LOAD_ONCE
+                    wmma::mma_sync(matResult[channelID], matPixels, matWeights[batchID], matResult[channelID]);
+                #else
+                    wmma::mma_sync(matResult[channelID], matPixels, matWeights, matResult[channelID]);
+                #endif
+*/
+                wmma::mma_sync(matResult[channelID], matPixels, matWeights, matResult[channelID]);
+                //focused TODO 
             }
-            wmma::load_matrix_sync(matPixels, pixelMatrix.ptr(warpID, 0, 0), pixelMatrix.stride());
-            #ifdef MATRIX_LOAD_ONCE
-                wmma::mma_sync(matResult, matPixels, matWeights[batchID], matResult);
-            #else
-                wmma::mma_sync(matResult, matPixels, matWeights, matResult);
-            #endif
         }
-        wmma::store_matrix_sync(resultMatrix.ptr(warpID, 0, 0), matResult, OUT_VIEWS_COUNT, wmma::mem_row_major);
-        for(int i = 0; i< OUT_VIEWS_COUNT; i++)
-            out_char_ptr[coord + mat_size * i] = __half2int_rn(resultMatrix.ref(warpID, matrixRowID, i));
+
+        for(int channelID=0; channelID<CHANNEL_COUNT; channelID++)
+        {
+            wmma::store_matrix_sync(pixelMatrix.ptr(ID.getBase()), matResult[channelID], OUT_VIEWS_COUNT, wmma::mem_row_major);
+            pixels.loadFromMatrix<half>(pixelMatrix.ptr(ID.linearCoordsY(matrixRowID, OUT_VIEWS_COUNT)), channelID);
+        }
+      
+        Indexer vID;
+        vID.linearCoordsBase(coords, IMG_WIDTH); 
+        for(int viewID = 0; viewID<OUT_VIEWS_COUNT; viewID++)
+            images.setPixel(vID.linearID(viewID, IMG_WIDTH*IMG_HEIGHT), pixels.getViewPixel(viewID));
+/*        
         #ifdef PERSISTENT_THREADS
         if(matrixRowID == 0)
         {
             act_block = atomicAdd(atomic_counter,1);
         }
         act_block = __shfl_sync(0xffffffff,act_block,0);
-        #endif
+        #endif*/
     }
 }

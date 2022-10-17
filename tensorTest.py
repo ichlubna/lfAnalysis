@@ -46,10 +46,10 @@ class KernelTester:
     resultGPU = None
     weightMatrixGPU = None
     rows_per_group = 16
-    matrix_load_once = True
-    weights_cols_major = True
+    matrix_load_once = False
+    weights_cols_major = False
     atomic_counter = 0
-    persistent_threads = True
+    persistent_threads = False
     
     kernels = []
 
@@ -165,7 +165,7 @@ class KernelTester:
         perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel+kernelSourceMain, options=kernelConstants, no_extern_c=True)
         tensorInterpolationKernel = SourceModule(kernelSourceGeneral+kernelSourceTensorInter+kernelSourceMain, options=kernelConstants, no_extern_c=True)
         self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(self.focus), (256,1,1), (int(round(self.width/(256))), int(self.height/self.rows_per_group)), 1024),
-                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(self.focus), (self.warpSize*8,1,1), (int(self.width/64), int(self.height/self.rows_per_group)), 8*8*4*(16)*2 + 64*8*2 + 8*8*4*8*2) ]
+                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(self.focus), (self.warpSize*8,1,1), (int(self.width/256), int(self.height/self.rows_per_group)), 8*8*4*(16)*2 + 64*8*2) ]
 
     def runAndMeasureKernel(self, kernel):
         if self.persistent_threads:
