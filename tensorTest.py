@@ -45,11 +45,11 @@ class KernelTester:
     imagesGPU = None
     resultGPU = None
     weightMatrixGPU = None
-    rows_per_group = 16
+    rows_per_group = 1
     matrix_load_once = False
     weights_cols_major = False
-    atomic_counter = 0
     persistent_threads = False
+    sync_every_row = True
     
     kernels = []
 
@@ -104,7 +104,6 @@ class KernelTester:
                 for weight in weightVectors:
                     weightsVectorsTransformed.append(weight[16*block:16*(block+1)])
             weightMatrix=numpy.c_[ weightsVectorsTransformed ]
-            #weightMatrix2= numpy.c_[ weightVectors ].T
         else:
             weightMatrix= numpy.c_[ weightVectors ].T
         return weightMatrix
@@ -155,6 +154,8 @@ class KernelTester:
             kernelConstants.append("-DWEIGHTS_COL_MAJOR")
         if self.persistent_threads:
             kernelConstants.append("-DPERSISTENT_THREADS")
+        if self.sync_every_row:
+            kernelConstants.append("-DSYNC_EVERY_ROW")
 
         scriptPath = os.path.dirname(os.path.realpath(__file__))
         kernelSourceMain =  open(scriptPath+"/cudaKernels/mainInterpolation.cu", "r").read()

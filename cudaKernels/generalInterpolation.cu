@@ -3,6 +3,15 @@
     #define ROWS_PER_THREAD 1
 #endif
 
+namespace Constants
+{
+    constexpr int MAT_PX_COUNT{32};
+    constexpr int WARP_COUNT{8}; 
+    constexpr int MAT_VIEW_COUNT{16};
+    constexpr int PERSIST_BLOCKS_X{(IMG_WIDTH+WARP_SIZE-1)/WARP_SIZE};
+    constexpr int PERSIST_BLOCKS_Y{(IMG_HEIGHT+ROWS_PER_THREAD-1)/ROWS_PER_THREAD};
+}
+
 using namespace nvcuda;
 
 extern __shared__ half localMemory[];
@@ -32,6 +41,67 @@ __device__ int2 getImageStartCoords(int focus, int2 position, float2 center)
     float2 offset{center.x-position.x, center.y-position.y};
     return {__float2int_rn(focus*offset.x), __float2int_rn(offset.y*focus)};
 }
+
+__device__ void rowSync()
+{
+    #if defined(SYNC_EVERY_ROW) && (ROWS_PER_THREAD > 1)
+    __syncthreads();
+    #endif  
+}
+
+class PersistentThreadsBlockGetter
+{
+public:
+    __device__ PersistentThreadsBlockGetter(unsigned int *atomic_counter) : atomic_counter(atomic_counter)
+    {
+    }
+    
+    unsigned int *atomic_counter;
+};
+
+class PersistentThreadsWarpBlockGetter: public PersistentThreadsBlockGetter
+{
+public:
+    __device__ PersistentThreadsWarpBlockGetter(unsigned int *atomic_counter) : PersistentThreadsBlockGetter(atomic_counter)
+    {
+    }
+
+    __device__ bool getNextId(unsigned int *id, unsigned int thread_in_warp)
+    {
+        unsigned int act_block;
+        if(thread_in_warp == 0)
+        {
+            act_block = atomicAdd(this->atomic_counter,1);
+        }
+        act_block = __shfl_sync(0xffffffff,act_block,0);
+        *id = act_block*WARP_SIZE + thread_in_warp;
+        return act_block < (Constants::PERSIST_BLOCKS_X * Constants::PERSIST_BLOCKS_Y);
+    }
+};
+
+class PersistentThreadsGroupBlockGetter: public PersistentThreadsBlockGetter
+{
+public:
+    __device__ PersistentThreadsGroupBlockGetter(unsigned int *local_atomic_counter, unsigned int block_size, unsigned int *atomic_counter) : PersistentThreadsBlockGetter(atomic_counter), local_atomic_counter(local_atomic_counter), block_size(block_size)
+    {
+    }
+    __device__ bool getNextId(unsigned int *id, unsigned int thread_in_block, bool start_sync_thread = false, bool end_sync_thread = true)
+    {
+        unsigned int act_block;
+        if(start_sync_thread) __syncthreads();
+        if(thread_in_block == 0)
+        {
+            local_atomic_counter[0] = atomicAdd(this->atomic_counter,1);
+        }
+        __syncthreads();
+        act_block = local_atomic_counter[0];
+        *id = act_block*this->block_size + thread_in_block;
+        if(end_sync_thread) __syncthreads();
+        return act_block < (Constants::PERSIST_BLOCKS_X * Constants::PERSIST_BLOCKS_Y);
+    }
+    unsigned int *local_atomic_counter;
+    unsigned int block_size;
+};
 
 class Images
 {
