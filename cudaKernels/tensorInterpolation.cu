@@ -1,3 +1,5 @@
+#include "generalInterpolation.cu"
+
 __device__ bool coordsOutside(int2 coords)
 {
     if(coords.x >= IMG_WIDTH || coords.y >= IMG_HEIGHT)
@@ -54,8 +56,6 @@ class Pixels
     }
 };
 
-
-
 __device__ void interpolateImages(half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2 coords, const int2 * __restrict__  image_starts, unsigned int *atomic_counter)
 {
     int warpID = threadIdx.x/WARP_SIZE;
@@ -84,14 +84,13 @@ __device__ void interpolateImages(half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2
         wmma::fragment<wmma::matrix_b, 32, 8, 16, half, matrix_b_dir> matWeights;
     #endif
   
-    //wmma::fragment<wmma::matrix_b, 32, 8, 16, half, wmma::row_major> matWeights;
     Pixels pixels;
     
     int batchCount = (GRID_COLS*GRID_ROWS)/Constants::MAT_VIEW_COUNT;
     #ifdef MATRIX_LOAD_ONCE
         for(int batchID = 0; batchID < batchCount; batchID++)
         {
-            wmma::load_matrix_sync(matWeights[batchID], localWeights.ptr(batchID*16*8), WEIGHTS_COLS);
+            wmma::load_matrix_sync(matWeights[batchID], localWeights.ptr(batchID*OUT_VIEWS_COUNT*Constants::MAT_VIEW_COUNT), WEIGHTS_COLS);
         }
     #endif
     int originalCoordY = coords.y;
@@ -116,7 +115,6 @@ __device__ void interpolateImages(half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2
                 #ifndef MATRIX_LOAD_ONCE
                     wmma::load_matrix_sync(matWeights, localWeights.ptr(batchID*16*8), WEIGHTS_COLS);
                 #endif
-                //wmma::load_matrix_sync(matWeights, localWeights.ptr(batchID*16*8), WEIGHTS_COLS);
                 for(int channelID=0; channelID<CHANNEL_COUNT; channelID++)
                 {
                     pixels.copyChannelsToMatrix(pixelMatrix.ptr(ID.linearCoordsY(matrixRowID, Constants::MAT_VIEW_COUNT)), channelID); 
@@ -127,7 +125,6 @@ __device__ void interpolateImages(half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2
                         wmma::mma_sync(matResult[channelID], matPixels, matWeights, matResult[channelID]);
                     #endif
     
-                    //wmma::mma_sync(matResult[channelID], matPixels, matWeights, matResult[channelID]);
                     //focused TODO 
                 }
             }
@@ -148,3 +145,5 @@ __device__ void interpolateImages(half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2
     }
     #endif
 }
+
+#include "mainInterpolation.cu"

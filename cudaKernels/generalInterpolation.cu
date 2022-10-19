@@ -3,6 +3,8 @@
     #define ROWS_PER_THREAD 1
 #endif
 
+#pragma nv_diag_suppress = declared_but_not_referenced
+
 namespace Constants
 {
     constexpr int MAT_PX_COUNT{32};

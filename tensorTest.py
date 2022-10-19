@@ -45,10 +45,10 @@ class KernelTester:
     imagesGPU = None
     resultGPU = None
     weightMatrixGPU = None
-    rows_per_group = 1
-    matrix_load_once = False
-    weights_cols_major = False
-    persistent_threads = False
+    rows_per_group = 16
+    matrix_load_once = True
+    weights_cols_major = True
+    persistent_threads = True
     sync_every_row = True
     
     kernels = []
@@ -140,7 +140,10 @@ class KernelTester:
         print("")
 
     def compileKernels(self):
-        kernelConstants = [ "-DIMG_WIDTH="+str(self.width), "-DIMG_HEIGHT="+str(self.height),
+        scriptPath = os.path.dirname(os.path.realpath(__file__))
+
+        kernelConstants = [ "-I="+scriptPath+"/cudaKernels",
+                            "-DIMG_WIDTH="+str(self.width), "-DIMG_HEIGHT="+str(self.height),
                             "-DGRID_COLS="+str(self.cols), "-DGRID_ROWS="+str(self.rows),
                             "-DWARP_SIZE="+str(self.warpSize), "-DCHANNEL_COUNT="+str(self.depth),
                             "-DROWS_PER_THREAD="+str(self.rows_per_group), "-DOUT_VIEWS_COUNT="+str(self.renderedViewsCount)]
@@ -157,14 +160,13 @@ class KernelTester:
         if self.sync_every_row:
             kernelConstants.append("-DSYNC_EVERY_ROW")
 
-        scriptPath = os.path.dirname(os.path.realpath(__file__))
         kernelSourceMain =  open(scriptPath+"/cudaKernels/mainInterpolation.cu", "r").read()
         kernelSourceGeneral = open(scriptPath+"/cudaKernels/generalInterpolation.cu", "r").read()
         kernelSourcePerPixel = open(scriptPath+"/cudaKernels/perPixelInterpolation.cu", "r").read()
         kernelSourceTensorInter = open(scriptPath+"/cudaKernels/tensorInterpolation.cu", "r").read()
 
-        perPixelKernel = SourceModule(kernelSourceGeneral+kernelSourcePerPixel+kernelSourceMain, options=kernelConstants, no_extern_c=True)
-        tensorInterpolationKernel = SourceModule(kernelSourceGeneral+kernelSourceTensorInter+kernelSourceMain, options=kernelConstants, no_extern_c=True)
+        perPixelKernel = SourceModule(kernelSourcePerPixel, options=kernelConstants, no_extern_c=True)
+        tensorInterpolationKernel = SourceModule(kernelSourceTensorInter, options=kernelConstants, no_extern_c=True)
         self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(self.focus), (256,1,1), (int(round(self.width/(256))), int(self.height/self.rows_per_group)), 1024),
                         KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(self.focus), (self.warpSize*8,1,1), (int(self.width/256), int(self.height/self.rows_per_group)), 8*8*4*(16)*2 + 64*8*2) ]
 

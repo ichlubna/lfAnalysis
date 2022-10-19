@@ -1,3 +1,5 @@
+#include "generalInterpolation.cu"
+
 __device__ bool coordsOutside(int2 coords)
 {
     if(coords.x >= IMG_WIDTH || coords.y >= IMG_HEIGHT)
@@ -53,3 +55,5 @@ __device__ void interpolateImages(half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2
     }
     #endif
 }
+
+#include "mainInterpolation.cu"
