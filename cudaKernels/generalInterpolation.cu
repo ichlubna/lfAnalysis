@@ -105,6 +105,9 @@ public:
     unsigned int block_size;
 };
 
+#ifdef USE_TEXTURES
+texture<unsigned int, 3, cudaReadModeElementType> textures;
+#endif
 class Images
 {
     public:
@@ -142,11 +145,19 @@ class Images
             return inData[linearID];
         }
 
+        #ifdef USE_TEXTURES
+         __device__ uchar4 getPixel(int imageID, int2 coords)
+        {
+            auto pixel = tex3D(textures, coords.x, coords.y, imageID);
+            return {*reinterpret_cast<uchar4*>(&pixel)};
+        }
+        #else
         __device__ uchar4 getPixel(int imageID, int2 coords)
         {
             int2 clamped{clamp(coords)};
             return inData[linear(clamped, imageID)];
         }
+        #endif
          
         template <typename T>
         class PixelArray

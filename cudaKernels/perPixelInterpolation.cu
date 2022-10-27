@@ -30,7 +30,12 @@ __device__ void interpolateImages(half weights[WEIGHTS_ROWS][WEIGHTS_COLS], int2
             for(int gridID = 0; gridID<GRID_ROWS*GRID_COLS; gridID++)
             {
                 //int2 focusedCoords{coords.x + image_starts[gridID].x,coords.y + image_starts[gridID].y};
+                
+                #ifdef USE_TEXTURES
+                auto pixel = images.getPixelAsArray<float>(gridID, {coords.x, coords.y+row_offset});
+                #else
                 auto pixel = images.getPixelAsArray<float>(pxID.linearID(gridID, IMG_WIDTH*IMG_HEIGHT));
+                #endif
                 for(int i=0; i<OUT_VIEWS_COUNT; i++)
                 {
                     #ifdef WEIGHTS_COL_MAJOR

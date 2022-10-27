@@ -43,6 +43,7 @@ class KernelTester:
     totalSize = 0
     lfReader = None
     imagesGPU = None
+    textures = None
     resultGPU = None
     weightMatrixGPU = None
     rows_per_group = 16
@@ -50,7 +51,8 @@ class KernelTester:
     weights_cols_major = True
     persistent_threads = True
     sync_every_row = True
-    
+    useTextures = False
+ 
     kernels = []
 
     def loadInput(self):
@@ -115,25 +117,49 @@ class KernelTester:
         self.zeroAtomicCounterGPU = cuda.mem_alloc(4)
         self.atomicCounterGPU = cuda.mem_alloc(4)
         cuda.memcpy_htod(self.zeroAtomicCounterGPU, numpy.array([0],dtype=numpy.uint32))
-        cuda.memcpy_htod(self.weightMatrixGPU, byteWeights)
+        cuda.memcpy_htod(self.weightMatrixGPU, byteWeights) 
+
+    def loadImagesAsTextures(self, images):
+        descr = cuda.ArrayDescriptor3D()
+        descr.width = int(self.width)
+        descr.height = int(self.height)
+        descr.depth = int(self.imageCount)
+        descr.format = cuda.dtype_to_array_format(numpy.uint32)
+        descr.num_channels = 1
+
+        self.textures = cuda.Array(descr)
+        copy = cuda.Memcpy3D()
+        copy.set_src_host(images.view(">u4"))
+        copy.set_dst_array(self.textures)
+        copy.width_in_bytes = copy.src_pitch = images.strides[1]
+        copy.src_height = copy.height = int(self.height)
+        copy.depth = int(self.imageCount)
+        copy()
+        self.imagesGPU = cuda.mem_alloc(1)
+
+    def loadImagesAsBuffers(self, images):
+        self.imagesGPU = cuda.mem_alloc(int(self.totalSize))
+        cuda.memcpy_htod(self.imagesGPU, images)
 
     def allocGPUResources(self):
         bar = ChargingBar("Allocating and uploading textures", max=self.cols*self.rows+2)
         self.allocWeightMatrices()
         bar.next()
 
-        images = bytes()
+        images = numpy.zeros((self.cols*self.rows, self.height, self.width, self.depth), numpy.uint8)
         for y in range(0,self.rows):
             for x in range(0, self.cols):
-                img = self.lfReader.openImage(x,y)
-                imgBytes = img.tobytes()
-                images += imgBytes
+                img = numpy.array(self.lfReader.openImage(x,y))
+                images[y*self.cols+x][:] = img
                 bar.next()
         bar.finish()
 
+        if self.useTextures:
+            self.loadImagesAsTextures(images)
+        else:
+            self.loadImagesAsBuffers(images)
+
         self.imageStartsGPU = cuda.mem_alloc(int(self.renderedViewsCount)*8)
-        self.imagesGPU = cuda.mem_alloc(int(self.totalSize))
-        cuda.memcpy_htod(self.imagesGPU, images)
         self.resultGPU = cuda.mem_alloc(self.size*self.renderedViewsCount)
         bar.next()
         bar.finish()
@@ -159,6 +185,8 @@ class KernelTester:
             kernelConstants.append("-DPERSISTENT_THREADS")
         if self.sync_every_row:
             kernelConstants.append("-DSYNC_EVERY_ROW")
+        if self.useTextures:
+            kernelConstants.append("-DUSE_TEXTURES")
 
         kernelSourceMain =  open(scriptPath+"/cudaKernels/mainInterpolation.cu", "r").read()
         kernelSourceGeneral = open(scriptPath+"/cudaKernels/generalInterpolation.cu", "r").read()
@@ -168,9 +196,12 @@ class KernelTester:
         perPixelKernel = SourceModule(kernelSourcePerPixel, options=kernelConstants, no_extern_c=True)
         tensorInterpolationKernel = SourceModule(kernelSourceTensorInter, options=kernelConstants, no_extern_c=True)
         self.kernels = [KernelParams("Per pixel", "classicInterpolation/", perPixelKernel, numpy.int32(self.focus), (256,1,1), (int(round(self.width/(256))), int(self.height/self.rows_per_group)), 1024),
-                        KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(self.focus), (self.warpSize*8,1,1), (int(self.width/256), int(self.height/self.rows_per_group)), 8*8*4*(16)*2 + 64*8*2) ]
+                       KernelParams("Tensor", "tensorInterpolation/", tensorInterpolationKernel, numpy.int32(self.focus), (self.warpSize*8,1,1), (int(self.width/256), int(self.height/self.rows_per_group)), 8*8*4*(16)*2 + 64*8*2) ]
 
     def runAndMeasureKernel(self, kernel):
+        if self.useTextures:
+            textureRef = kernel.module.get_texref("textures")
+            textureRef.set_array(self.textures)
         if self.persistent_threads:
             cuda.memcpy_dtod(self.atomicCounterGPU, self.zeroAtomicCounterGPU,4)
         start=cuda.Event()

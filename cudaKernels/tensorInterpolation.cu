@@ -18,7 +18,11 @@ class Pixels
         int batchOffset = batchID*Constants::MAT_VIEW_COUNT; 
         for(int i=0; i<Constants::MAT_VIEW_COUNT; i++)
         {
+            #ifdef USE_TEXTURES
+            uchar4 px = images.getPixel(batchOffset+i, coords);
+            #else
             uchar4 px = images.getPixel(linear + images.linear(batchOffset+i));
+            #endif
             for(int j=0; j<CHANNEL_COUNT; j++)
                 reinterpret_cast<unsigned char*>(data)[Constants::MAT_VIEW_COUNT*j + i] = reinterpret_cast<unsigned char*>(&px)[j];
         }
