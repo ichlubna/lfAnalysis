@@ -33,7 +33,7 @@ class LfReader:
         self.pixFmt = pixFmt
 
     def openImage(self, row, column):
-        filePath = self.path+"/"+self.files[row][column]
+        filePath = os.path.join(self.path, self.files[row][column])
         image = Image.open(filePath)
         return image.convert(self.pixFmt)
 

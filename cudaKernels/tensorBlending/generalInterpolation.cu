@@ -183,6 +183,14 @@ class Images
                     //sum[j] += fPixel[j]*weight;
                     channels[j] = __fmaf_rn(value[j], weight, channels[j]);
             }
+
+            __device__ PixelArray<T> operator-(const PixelArray<T> &a)
+            {
+                PixelArray<T> result; 
+                for(int j=0; j<CHANNEL_COUNT; j++)
+                    result[j] = a[j] - this[j];
+                return result;
+            }
             
             __device__ PixelArray<T> operator/= (const T &divisor)
             {
