@@ -37,6 +37,13 @@ class LfReader:
         image = Image.open(filePath)
         return image.convert(self.pixFmt)
 
+    def getRowFunction(self, coordY, imgX, imgY):
+        image = self.openImage(imgY, imgX)
+        pixels = [ [0] for i in range(0, image.size[0])]
+        for x in range(0, image.size[0]):
+            pixels[x] = image.getpixel((x, coordY))
+        return pixels
+
     def getPxFunction(self, coordX, coordY):
         pixel = [ [0]*self.cols for i in range(0, self.rows)]
         for x in range(0, self.cols):

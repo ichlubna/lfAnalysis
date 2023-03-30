@@ -11,7 +11,7 @@ class Compressor:
         clamp = 128
         #for i in range(0,len(coefs)):
         #    coefs[i] = max(min(round(coefs[i]*dec), clamp),-clamp)/dec
-
+        print(len(values))
         print(coefs)
 
         newCoefs = [0]*len(coefs)
@@ -20,7 +20,7 @@ class Compressor:
         #    newCoefs[sortedIndices[i]] = coefs[sortedIndices[i]]
         #newCoefs[0] = coefs[0]
 
-        for i in range(0, 25):
+        for i in range(0, len(coefs)):
            newCoefs[i] = coefs[i]
 
         valuesBack = idct(newCoefs, norm="ortho")
